@@ -50,15 +50,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--package", help="Package name override if it cannot be extracted from the APK.")
     parser.add_argument("--max-events", type=int, default=30, help="Maximum number of UI taps to perform.")
     parser.add_argument("--wait", type=int, default=5, help="Seconds to wait after app start and each tap.")
-    parser.add_argument(
-        "--strategy",
-        choices=("auto", "accessibility", "grid"),
-        default="auto",
-        help="UI exploration strategy. 'auto' tries accessibility first and falls back to grid taps.",
-    )
-    parser.add_argument("--grid-rows", type=int, default=5, help="Rows for grid fallback exploration.")
-    parser.add_argument("--grid-cols", type=int, default=4, help="Columns for grid fallback exploration.")
-    parser.add_argument("--screenshots", default="", help="Directory to save before/after screenshots for each tap.")
     parser.add_argument("--listen-port", type=int, default=8080, help="mitmproxy listen port.")
     parser.add_argument("--skip-capture", action="store_true", help="Do not start mitmdump; use an existing traffic_logs.csv instead.")
     return parser.parse_args()
@@ -72,24 +63,7 @@ def main() -> int:
 
     mitm_proc = None if args.skip_capture else start_mitmproxy(args.listen_port)
     try:
-        command = [
-            sys.executable,
-            "auto_runner.py",
-            "--apk",
-            args.apk,
-            "--max-events",
-            str(args.max_events),
-            "--wait",
-            str(args.wait),
-            "--strategy",
-            args.strategy,
-            "--grid-rows",
-            str(args.grid_rows),
-            "--grid-cols",
-            str(args.grid_cols),
-        ]
-        if args.screenshots:
-            command.extend(["--screenshots", args.screenshots])
+        command = [sys.executable, "auto_runner.py", "--apk", args.apk, "--max-events", str(args.max_events), "--wait", str(args.wait)]
         if args.package:
             command.extend(["--package", args.package])
         if args.serial:
