@@ -181,6 +181,7 @@ def auto_explore(
     wait_seconds: int,
 ) -> None:
     print(f"[UI] Starting app: {package_name}")
+    print(f"[UI] Framework: {framework}; strategy: {strategy}")
     d.app_start(package_name)
     time.sleep(wait_seconds)
 
