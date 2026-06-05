@@ -1,0 +1,7 @@
+event_id,timestamp,screen,action,element_text
+E001,1780631919,Home,tap,Get Ticket
+E002,1780631925,Home,tap,TopTab_1
+E003,1780631930,Home,tap,TopTab_2
+E004,1780631935,Home,tap,TopTab_3
+E005,1780631940,Home,tap,TopTab_4
+E006,1780631946,Home,tap,TopTab_5

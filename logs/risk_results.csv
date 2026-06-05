@@ -1,0 +1,7 @@
+event_id,element_text,domain,scheme,delta_time,risk,reason
+E001,Get Ticket,None,None,0,Low,この操作の直後に通信は検知されませんでした。
+E002,TopTab_1,None,None,0,Low,この操作の直後に通信は検知されませんでした。
+E003,TopTab_2,None,None,0,Low,この操作の直後に通信は検知されませんでした。
+E004,TopTab_3,None,None,0,Low,この操作の直後に通信は検知されませんでした。
+E005,TopTab_4,None,None,0,Low,この操作の直後に通信は検知されませんでした。
+E006,TopTab_5,None,None,0,Low,この操作の直後に通信は検知されませんでした。
