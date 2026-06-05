@@ -17,19 +17,6 @@ st.sidebar.markdown(
 uploaded_apk = st.sidebar.file_uploader("解析するAPKファイル", type=["apk"])
 max_events = st.sidebar.number_input("最大タップ数", min_value=1, max_value=200, value=30, step=1)
 wait_seconds = st.sidebar.number_input("各操作後の待機秒数", min_value=1, max_value=60, value=5, step=1)
-package_name = st.sidebar.text_input(
-    "パッケージ名（任意）",
-    help="自動検出に失敗する場合は com.example.app のようなAndroidパッケージ名を入力してください。",
-)
-strategy = st.sidebar.selectbox(
-    "UI探索戦略",
-    options=["auto", "accessibility", "grid"],
-    index=0,
-    help="autoはUI階層を優先し、候補が無い場合に座標グリッド探索へフォールバックします。",
-)
-grid_cols = st.sidebar.number_input("グリッド列数", min_value=1, max_value=10, value=4, step=1)
-grid_rows = st.sidebar.number_input("グリッド行数", min_value=1, max_value=10, value=5, step=1)
-save_screenshots = st.sidebar.checkbox("各タップ前後のスクリーンショットを保存", value=False)
 skip_capture = st.sidebar.checkbox("mitmproxyを起動せず既存の通信ログを使う", value=False)
 
 if uploaded_apk is not None:
@@ -48,17 +35,7 @@ if uploaded_apk is not None:
             str(max_events),
             "--wait",
             str(wait_seconds),
-            "--strategy",
-            strategy,
-            "--grid-cols",
-            str(grid_cols),
-            "--grid-rows",
-            str(grid_rows),
         ]
-        if package_name.strip():
-            command.extend(["--package", package_name.strip()])
-        if save_screenshots:
-            command.extend(["--screenshots", "logs/screenshots"])
         if skip_capture:
             command.append("--skip-capture")
 
