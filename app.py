@@ -1,11 +1,74 @@
 import streamlit as st
 import pandas as pd
 import os
+import subprocess
+import sys
 
 st.set_page_config(page_title="Android UI-Traffic Risk Analyzer", layout="wide")
 
 st.title("📱 Android UI操作起因 通信リスク検知システム")
 st.markdown("自動操作ログと通信ログを時系列で対応づけ、危険な挙動のトリガーとなったUI要素を特定します。")
+
+
+st.sidebar.header("🚀 APK自動解析")
+st.sidebar.markdown(
+    "APKをアップロードすると、インストール、アプリ起動、UI自動探索、通信ログとの突合解析までを一括実行できます。"
+)
+uploaded_apk = st.sidebar.file_uploader("解析するAPKファイル", type=["apk"])
+max_events = st.sidebar.number_input("最大タップ数", min_value=1, max_value=200, value=30, step=1)
+wait_seconds = st.sidebar.number_input("各操作後の待機秒数", min_value=1, max_value=60, value=5, step=1)
+strategy = st.sidebar.selectbox(
+    "UI探索戦略",
+    options=["auto", "accessibility", "grid"],
+    index=0,
+    help="autoはUI階層を優先し、候補が無い場合に座標グリッド探索へフォールバックします。",
+)
+grid_cols = st.sidebar.number_input("グリッド列数", min_value=1, max_value=10, value=4, step=1)
+grid_rows = st.sidebar.number_input("グリッド行数", min_value=1, max_value=10, value=5, step=1)
+save_screenshots = st.sidebar.checkbox("各タップ前後のスクリーンショットを保存", value=False)
+skip_capture = st.sidebar.checkbox("mitmproxyを起動せず既存の通信ログを使う", value=False)
+
+if uploaded_apk is not None:
+    os.makedirs("uploads", exist_ok=True)
+    apk_path = os.path.join("uploads", uploaded_apk.name)
+    with open(apk_path, "wb") as f:
+        f.write(uploaded_apk.getbuffer())
+    st.sidebar.success(f"APKを保存しました: {apk_path}")
+
+    if st.sidebar.button("APKから自動解析を開始"):
+        command = [
+            sys.executable,
+            "run_analysis.py",
+            apk_path,
+            "--max-events",
+            str(max_events),
+            "--wait",
+            str(wait_seconds),
+            "--strategy",
+            strategy,
+            "--grid-cols",
+            str(grid_cols),
+            "--grid-rows",
+            str(grid_rows),
+        ]
+        if save_screenshots:
+            command.extend(["--screenshots", "logs/screenshots"])
+        if skip_capture:
+            command.append("--skip-capture")
+
+        with st.spinner("APK解析を実行中です。接続済みAndroid端末/エミュレータを操作します..."):
+            result = subprocess.run(command, text=True, capture_output=True)
+
+        st.sidebar.code(" ".join(command), language="bash")
+        if result.returncode == 0:
+            st.sidebar.success("解析が完了しました。")
+            if result.stdout:
+                st.sidebar.text_area("実行ログ", result.stdout, height=240)
+            st.rerun()
+        else:
+            st.sidebar.error("解析に失敗しました。")
+            st.sidebar.text_area("標準出力", result.stdout, height=160)
+            st.sidebar.text_area("エラー", result.stderr, height=160)
 
 result_file = "logs/risk_results.csv"
 
