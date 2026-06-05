@@ -77,7 +77,7 @@ if os.path.exists(result_file):
         return ['background-color: #d4edda; color: #155724;'] * len(row)
         
     styled_df = df.style.apply(color_risk, axis=1)
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(styled_df, width="stretch")
     
     # 各種生データログの確認用タブ
     st.write("---")
@@ -86,9 +86,9 @@ if os.path.exists(result_file):
     
     with tab1:
         if os.path.exists("logs/ui_events.csv"):
-            st.dataframe(pd.read_csv("logs/ui_events.csv"), use_container_width=True)
+            st.dataframe(pd.read_csv("logs/ui_events.csv"), width="stretch")
     with tab2:
         if os.path.exists("logs/traffic_logs.csv"):
-            st.dataframe(pd.read_csv("logs/traffic_logs.csv"), use_container_width=True)
+            st.dataframe(pd.read_csv("logs/traffic_logs.csv"), width="stretch")
 else:
     st.info("解析結果（logs/risk_results.csv）がまだ生成されていません。上のステップを実行してください。")
