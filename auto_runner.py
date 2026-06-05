@@ -51,6 +51,17 @@ def extract_package_with_android_tools(apk_path: str) -> Optional[str]:
     return None
 
 
+def install_apk(apk_path: str, serial: Optional[str] = None) -> None:
+    if not os.path.exists(apk_path):
+        raise FileNotFoundError(f"APK file not found: {apk_path}")
+
+    print(f"[APK] Installing: {apk_path}")
+    install_proc = adb(["install", "-r", apk_path], serial=serial, check=False)
+    install_output = (install_proc.stdout + install_proc.stderr).strip()
+    if install_proc.returncode != 0 and "INSTALL_FAILED_ALREADY_EXISTS" not in install_output:
+        raise RuntimeError(f"adb install failed:\n{install_output}")
+
+
 def install_apk_and_get_package(apk_path: str, serial: Optional[str] = None) -> str:
     if not os.path.exists(apk_path):
         raise FileNotFoundError(f"APK file not found: {apk_path}")
@@ -58,11 +69,7 @@ def install_apk_and_get_package(apk_path: str, serial: Optional[str] = None) -> 
     package_from_tools = extract_package_with_android_tools(apk_path)
     before_packages = list_installed_packages(serial)
 
-    print(f"[APK] Installing: {apk_path}")
-    install_proc = adb(["install", "-r", apk_path], serial=serial, check=False)
-    install_output = (install_proc.stdout + install_proc.stderr).strip()
-    if install_proc.returncode != 0 and "INSTALL_FAILED_ALREADY_EXISTS" not in install_output:
-        raise RuntimeError(f"adb install failed:\n{install_output}")
+    install_apk(apk_path, serial=serial)
 
     after_packages = list_installed_packages(serial)
     new_packages = sorted(after_packages - before_packages)
@@ -181,7 +188,6 @@ def auto_explore(
     wait_seconds: int,
 ) -> None:
     print(f"[UI] Starting app: {package_name}")
-    print(f"[UI] Framework: {framework}; strategy: {strategy}")
     d.app_start(package_name)
     time.sleep(wait_seconds)
 
@@ -260,7 +266,11 @@ def main() -> None:
     import uiautomator2 as u2
 
     d = u2.connect(args.serial) if args.serial else u2.connect()
-    detected_package = install_apk_and_get_package(args.apk, serial=args.serial) if args.apk else None
+    detected_package = None
+    if args.apk and args.package:
+        install_apk(args.apk, serial=args.serial)
+    elif args.apk:
+        detected_package = install_apk_and_get_package(args.apk, serial=args.serial)
     package_name = args.package or detected_package
     if not package_name:
         raise SystemExit("Package name could not be determined.")
