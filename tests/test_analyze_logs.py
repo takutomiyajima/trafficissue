@@ -156,9 +156,9 @@ class AnalyzeLogsTest(unittest.TestCase):
             self.assertNotIn("09012345678", sensitive["reason"])
 
             second = df[df["event_id"] == "E002"].iloc[0]
-            self.assertEqual(second["observability_status"], "none")
-            self.assertEqual(second["risk"], "Low")
-            self.assertEqual(second["risk_rule"], "no_traffic")
+            self.assertEqual(second["observability_status"], "not_observed")
+            self.assertEqual(second["risk"], "Unknown")
+            self.assertEqual(second["risk_rule"], "no_observed_traffic")
             self.assertIn("5秒以内", second["reason"])
 
     @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
@@ -211,7 +211,7 @@ class AnalyzeLogsTest(unittest.TestCase):
             df = analyze(str(ui_path), str(traffic_path), str(output_path), window_seconds=5)
 
             first = df.iloc[0]
-            self.assertEqual(first["observability_status"], "unreadable")
+            self.assertEqual(first["observability_status"], "unreadable_tls")
             self.assertEqual(first["risk"], "Unknown")
             self.assertEqual(first["risk_rule"], "unreadable_traffic")
             self.assertEqual(first["risk_category"], "判定不能通信")
@@ -301,8 +301,8 @@ class AnalyzeLogsTest(unittest.TestCase):
             self.assertEqual(len(df), 1)
             first = df.iloc[0]
             self.assertEqual(first["event_id"], "E001")
-            self.assertEqual(first["observability_status"], "none")
-            self.assertEqual(first["risk"], "Low")
+            self.assertEqual(first["observability_status"], "capture_failed")
+            self.assertEqual(first["risk"], "Unknown")
 
 
     @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
@@ -329,8 +329,8 @@ class AnalyzeLogsTest(unittest.TestCase):
             first = df.iloc[0]
             self.assertEqual(first["event_id"], "E001")
             self.assertEqual(first["app_package"], "com.example")
-            self.assertEqual(first["observability_status"], "none")
-            self.assertEqual(first["risk_rule"], "no_traffic")
+            self.assertEqual(first["observability_status"], "capture_failed")
+            self.assertEqual(first["risk_rule"], "no_observed_traffic")
 
     @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
     def test_analyze_normalizes_log_headers_before_correlation(self):
@@ -357,6 +357,51 @@ class AnalyzeLogsTest(unittest.TestCase):
             self.assertEqual(first["event_id"], "E001")
             self.assertEqual(first["domain"], "unknown-site.com")
             self.assertEqual(first["observability_status"], "observed")
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_correlates_metadata_only_log_and_filters_target_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            metadata_path = base / "pcap_metadata.csv"
+            output_path = base / "risk_results.csv"
+
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E000,100.0,com.example/.MainActivity,launch,com.example\n"
+                "E001,200.0,com.other/.Other,tap,Outside\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
+                encoding="utf-8",
+            )
+            metadata_path.write_text(
+                "time,app,host,ip,port,l4_proto,sent_bytes,received_bytes,source\n"
+                "101.2,com.example,collector.example.net,203.0.113.10,443,TCP,120,500,pcapdroid\n"
+                "201.0,com.other,other.example.net,203.0.113.20,443,TCP,50,60,pcapdroid\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(
+                str(ui_path),
+                str(traffic_path),
+                str(output_path),
+                window_seconds=5,
+                target_package="com.example",
+                metadata_path=str(metadata_path),
+                allowed_domains=("example.com",),
+            )
+
+            self.assertEqual(len(df), 1)
+            first = df.iloc[0]
+            self.assertEqual(first["event_id"], "E000")
+            self.assertEqual(first["observability_status"], "metadata_only")
+            self.assertEqual(first["metadata_source"], "pcapdroid")
+            self.assertEqual(first["domain"], "collector.example.net")
+            self.assertEqual(first["destination_ip"], "203.0.113.10")
+            self.assertEqual(first["risk_rule"], "metadata_only")
 
 
 if __name__ == "__main__":

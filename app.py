@@ -10,8 +10,8 @@ st.set_page_config(page_title="通信ログ・危険通信チェック", layout=
 
 st.title("通信ログ・危険通信チェック")
 st.markdown(
-    "mitmproxyで記録した `logs/traffic_logs.csv` を読み込み、HTTP平文通信、個人情報らしいURLキー、"
-    "広告/解析系ドメイン、許可外ドメインへの送信、通信エラーなどの分かりやすいルールだけで判定します。"
+    "UI操作ログ・mitmproxy通信ログ・任意のVPN/pcapメタデータを時系列で突合し、"
+    "リスク分類と観測可能性（observed / metadata_only / not_observed / capture_failed など）を分けて表示します。"
 )
 
 DEFAULT_ALLOWED_DOMAINS = "example.com\napi.example.com"
@@ -32,22 +32,23 @@ def ensure_columns(df, defaults):
 
 
 def overall_risk_label(df):
-    observed = df[df["observability_status"] == "observed"] if "observability_status" in df.columns else df
-    if not observed.empty:
-        if (observed["risk"] == "High").any():
-            return "High"
-        if (observed["risk"] == "Medium").any():
-            return "Medium"
-        return "Low"
-    if "observability_status" in df.columns and (df["observability_status"] == "unreadable").any():
+    if df.empty:
+        return "Unknown"
+    if (df["risk"] == "High").any():
+        return "High"
+    if (df["risk"] == "Medium").any():
+        return "Medium"
+    if (df["risk"] == "Unknown").any():
         return "Unknown"
     return "Low"
 
 
 st.sidebar.header("ログ再判定")
 st.sidebar.caption("APK自動操作などの複雑な操作は置かず、既に取れている通信ログを確認・判定します。")
-traffic_log_path = st.sidebar.text_input("通信ログCSV", "logs/traffic_logs.csv")
+traffic_log_path = st.sidebar.text_input("mitmproxy通信ログCSV", "logs/traffic_logs.csv")
+metadata_log_path = st.sidebar.text_input("VPN/pcapメタデータCSV（任意）", "logs/pcap_metadata.csv")
 risk_result_path = st.sidebar.text_input("判定結果CSV", "logs/risk_results.csv")
+target_package = st.sidebar.text_input("対象パッケージ（任意）", "")
 allowed_domains_text = st.sidebar.text_area("First-party / allowlistドメイン（1行1件）", DEFAULT_ALLOWED_DOMAINS, height=90)
 include_system_probes = st.sidebar.checkbox(
     "Android/Google接続確認通信も含める",
@@ -66,6 +67,10 @@ if st.sidebar.button("通信ログを判定する"):
     ]
     for domain in [line.strip() for line in allowed_domains_text.splitlines() if line.strip()]:
         command.extend(["--allowed-domain", domain])
+    if metadata_log_path and os.path.exists(metadata_log_path):
+        command.extend(["--metadata-log", metadata_log_path])
+    if target_package.strip():
+        command.extend(["--target-package", target_package.strip()])
     if include_system_probes:
         command.append("--include-system-probes")
 
@@ -90,6 +95,12 @@ if os.path.exists(result_file):
         df,
         {
             "observability_status": "observed",
+            "metadata_source": "",
+            "destination_ip": "",
+            "destination_port": "",
+            "protocol": "",
+            "bytes_sent": "",
+            "bytes_received": "",
             "risk": "Low",
             "risk_category": "未分類通信",
             "risk_rule": "unclassified",
@@ -105,11 +116,13 @@ if os.path.exists(result_file):
             "error": "",
         },
     )
-    observed_df = df[df["observability_status"] == "observed"].copy()
-    unreadable_df = df[df["observability_status"] == "unreadable"].copy()
+    observed_df = df[df["observability_status"].isin(["observed", "metadata_only"])].copy()
+    unreadable_df = df[df["observability_status"].isin(["unreadable_tls", "metadata_only"])].copy()
+    not_observed_df = df[df["observability_status"].isin(["not_observed", "capture_failed"])].copy()
 
     total_traffic = len(observed_df)
     unreadable_count = len(unreadable_df)
+    not_observed_count = len(not_observed_df)
     domain_count = observed_df["domain"].replace("", pd.NA).dropna().nunique()
     external_count = len(observed_df[observed_df["destination_party"] == "third-party"])
     http_count = len(observed_df[observed_df["risk_rule"] == "cleartext_http"])
@@ -117,14 +130,15 @@ if os.path.exists(result_file):
     error_count = len(observed_df[observed_df["error"].astype(str).str.len() > 0])
 
     st.subheader("サマリー")
-    cols = st.columns(7)
-    cols[0].metric("判定済み通信数", total_traffic)
-    cols[1].metric("判定不能通信", unreadable_count)
-    cols[2].metric("通信先ドメイン数", domain_count)
-    cols[3].metric("外部ドメイン通信", external_count)
-    cols[4].metric("HTTP平文通信", http_count)
-    cols[5].metric("個人情報らしいキー", sensitive_count)
-    cols[6].metric("通信エラー", error_count)
+    cols = st.columns(8)
+    cols[0].metric("観測通信数", total_traffic)
+    cols[1].metric("本文未読/メタデータ", unreadable_count)
+    cols[2].metric("未観測イベント", not_observed_count)
+    cols[3].metric("通信先ドメイン数", domain_count)
+    cols[4].metric("外部ドメイン通信", external_count)
+    cols[5].metric("HTTP平文通信", http_count)
+    cols[6].metric("個人情報らしいキー", sensitive_count)
+    cols[7].metric("通信エラー", error_count)
     st.metric("総合リスク", overall_risk_label(df))
 
     summary_tab, details_tab, raw_tab = st.tabs(["リスク内訳", "詳細ログ", "生ログ"])
@@ -164,7 +178,7 @@ if os.path.exists(result_file):
                 return ["background-color: #f8d7da; color: #721c24; font-weight: bold;"] * len(row)
             if row["risk"] == "Medium":
                 return ["background-color: #fff3cd; color: #856404;"] * len(row)
-            if row["risk"] == "Unknown" or row.get("observability_status") == "unreadable":
+            if row["risk"] == "Unknown" or row.get("observability_status") in {"unreadable_tls", "metadata_only", "not_observed", "capture_failed"}:
                 return ["background-color: #e2e3e5; color: #383d41;"] * len(row)
             return ["background-color: #d4edda; color: #155724;"] * len(row)
 
@@ -177,6 +191,12 @@ if os.path.exists(result_file):
             "data_categories",
             "domain",
             "destination_party",
+            "metadata_source",
+            "destination_ip",
+            "destination_port",
+            "protocol",
+            "bytes_sent",
+            "bytes_received",
             "scheme",
             "method",
             "status_code",
@@ -198,5 +218,12 @@ if os.path.exists(result_file):
             st.dataframe(traffic_df, width="stretch")
         else:
             st.info(f"{traffic_log_path} が見つかりません。")
+
+        st.subheader("VPN/pcapメタデータ")
+        metadata_df = read_csv_if_exists(metadata_log_path)
+        if metadata_df is not None:
+            st.dataframe(metadata_df, width="stretch")
+        else:
+            st.info(f"{metadata_log_path} が見つかりません。")
 else:
     st.info("判定結果CSVがまだ生成されていません。サイドバーから通信ログを判定してください。")

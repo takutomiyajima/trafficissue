@@ -33,12 +33,26 @@ class FakeDevice:
 class AutoRunnerTest(unittest.TestCase):
     def test_auto_explore_finishes_when_current_screen_has_no_new_clickables(self):
         device = FakeDevice()
-        with patch("auto_runner.time.sleep"), patch("auto_runner.log_event", return_value=123):
+        with patch("auto_runner.time.sleep"), patch("auto_runner.log_launch_event", return_value=100), patch("auto_runner.log_event", return_value=123):
             auto_runner.auto_explore(device, "com.example", "unused.csv", max_events=10, wait_seconds=1)
 
         self.assertEqual(device.clicked, [(50, 50)])
         self.assertEqual(device.pressed, [])
 
+    def test_auto_explore_skips_external_package_before_logging_tap(self):
+        device = FakeDevice()
+        device.current = {"package": "com.android.settings", "activity": ".Settings"}
+        with patch("auto_runner.time.sleep"), patch("auto_runner.log_launch_event", return_value=100), patch("auto_runner.log_event", return_value=123) as mock_log:
+            def restore_target(key):
+                device.pressed.append(key)
+                device.current = {"package": "com.example", "activity": ".MainActivity"}
+
+            device.press = restore_target
+            auto_runner.auto_explore(device, "com.example", "unused.csv", max_events=1, wait_seconds=1)
+
+        self.assertEqual(device.pressed, ["back"])
+        self.assertEqual(device.clicked, [(50, 50)])
+        self.assertEqual(mock_log.call_count, 1)
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,12 @@ RESULT_COLUMNS = [
     "traffic_timestamp",
     "time_delta",
     "observability_status",
+    "metadata_source",
+    "destination_ip",
+    "destination_port",
+    "protocol",
+    "bytes_sent",
+    "bytes_received",
     "domain",
     "destination_party",
     "scheme",
@@ -48,6 +54,7 @@ RESULT_COLUMNS = [
 DEFAULT_UI_PATH = "logs/ui_events.csv"
 DEFAULT_TRAFFIC_PATH = "logs/traffic_logs.csv"
 DEFAULT_OUTPUT_PATH = "logs/risk_results.csv"
+DEFAULT_METADATA_PATH = "logs/pcap_metadata.csv"
 DEFAULT_WINDOW_SECONDS = 5.0
 DEFAULT_ALLOWED_DOMAINS = ("example.com", "api.example.com")
 SYSTEM_CONNECTIVITY_CHECK_DOMAINS = (
@@ -71,6 +78,18 @@ TRAFFIC_COLUMNS = [
     "error",
 ]
 UI_COLUMNS = ["event_id", "timestamp", "screen", "action", "element_text"]
+
+METADATA_COLUMNS = [
+    "timestamp",
+    "package",
+    "destination_host",
+    "destination_ip",
+    "destination_port",
+    "protocol",
+    "bytes_sent",
+    "bytes_received",
+    "source",
+]
 
 
 def _clean(value: object) -> str:
@@ -105,8 +124,17 @@ def _derive_scheme_domain(scheme: str, domain: str, url: str) -> tuple[str, str]
 def observability_status_for_decision(decision: RuleResult) -> str:
     """Return a status that separates readable traffic from traffic with missing metadata."""
     if decision.rule_id == "unreadable_traffic":
-        return "unreadable"
+        return "unreadable_tls"
+    if decision.rule_id == "metadata_only":
+        return "metadata_only"
     return "observed"
+
+
+def no_traffic_status(traffic_log_had_rows: bool, metadata_log_had_rows: bool) -> str:
+    """Classify an unmatched UI event without turning non-observation into Low risk."""
+    if traffic_log_had_rows or metadata_log_had_rows:
+        return "not_observed"
+    return "capture_failed"
 
 
 def is_system_connectivity_probe(scheme: str, domain: str, url: str, status_code: object = "") -> bool:
@@ -176,6 +204,47 @@ def _ensure_columns(df, columns: Sequence[str]):
     return df.reindex(columns=list(columns) + [column for column in df.columns if column not in columns])
 
 
+def _normalize_metadata_columns(df):
+    """Accept simple PCAPdroid/VPN CSV aliases and normalize them to METADATA_COLUMNS."""
+    aliases = {
+        "time": "timestamp",
+        "ts": "timestamp",
+        "app": "package",
+        "uid_name": "package",
+        "host": "destination_host",
+        "hostname": "destination_host",
+        "sni": "destination_host",
+        "dst_host": "destination_host",
+        "ip": "destination_ip",
+        "dst_ip": "destination_ip",
+        "remote_ip": "destination_ip",
+        "port": "destination_port",
+        "dst_port": "destination_port",
+        "remote_port": "destination_port",
+        "l4_proto": "protocol",
+        "sent_bytes": "bytes_sent",
+        "rcvd_bytes": "bytes_received",
+        "received_bytes": "bytes_received",
+    }
+    rename_map = {}
+    for column in df.columns:
+        normalized = _clean(column).lower().replace(" ", "_")
+        if normalized in aliases and aliases[normalized] not in df.columns:
+            rename_map[column] = aliases[normalized]
+    return df.rename(columns=rename_map)
+
+
+
+def _empty_metadata_fields() -> dict:
+    return {
+        "metadata_source": "mitmproxy",
+        "destination_ip": "",
+        "destination_port": "",
+        "protocol": "",
+        "bytes_sent": "",
+        "bytes_received": "",
+    }
+
 
 def build_result_for_traffic_row(traffic_row, allowed_domains: Sequence[str], event_id: str = "") -> dict:
     """Classify a single traffic row without requiring UI automation metadata."""
@@ -204,6 +273,7 @@ def build_result_for_traffic_row(traffic_row, allowed_domains: Sequence[str], ev
         "traffic_timestamp": traffic_time,
         "time_delta": "",
         "observability_status": observability_status_for_decision(decision),
+        **_empty_metadata_fields(),
         "domain": domain,
         "destination_party": destination_party(domain, allowed_domains),
         "scheme": scheme,
@@ -231,6 +301,8 @@ def analyze(
     window_seconds: float = DEFAULT_WINDOW_SECONDS,
     allowed_domains: Optional[Sequence[str]] = None,
     include_system_probes: bool = False,
+    target_package: str = "",
+    metadata_path: str = "",
 ):
     import pandas as pd
 
@@ -241,11 +313,21 @@ def analyze(
 
     ui_df = _read_log_csv(ui_path, UI_COLUMNS) if os.path.exists(ui_path) else pd.DataFrame(columns=UI_COLUMNS)
     traffic_df = _read_log_csv(traffic_path, TRAFFIC_COLUMNS)
+    metadata_df = (
+        _ensure_columns(_normalize_metadata_columns(_read_log_csv(metadata_path, ())), METADATA_COLUMNS)
+        if metadata_path and os.path.exists(metadata_path)
+        else pd.DataFrame(columns=METADATA_COLUMNS)
+    )
 
     ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
     traffic_df["timestamp"] = pd.to_numeric(traffic_df["timestamp"], errors="coerce")
+    metadata_df["timestamp"] = pd.to_numeric(metadata_df["timestamp"], errors="coerce")
     traffic_df = traffic_df.dropna(subset=["timestamp"]).copy()
+    metadata_df = metadata_df.dropna(subset=["timestamp"]).copy()
+    traffic_log_had_rows = not traffic_df.empty
+    metadata_log_had_rows = not metadata_df.empty
     traffic_df = traffic_df.drop_duplicates(subset=TRAFFIC_COLUMNS)
+    metadata_df = metadata_df.drop_duplicates(subset=METADATA_COLUMNS)
 
     if not include_system_probes and not traffic_df.empty:
         system_probe_mask = traffic_df.apply(
@@ -259,6 +341,13 @@ def analyze(
         )
         traffic_df = traffic_df[~system_probe_mask].copy()
         traffic_df = _ensure_columns(traffic_df, TRAFFIC_COLUMNS)
+
+    target_package = _clean(target_package)
+    if target_package and not ui_df.empty:
+        package_mask = ui_df["screen"].map(lambda value: extract_app_package(_clean(value)) in {"", target_package})
+        ui_df = ui_df[package_mask].copy()
+    if target_package and not metadata_df.empty and "package" in metadata_df.columns:
+        metadata_df = metadata_df[metadata_df["package"].map(lambda value: _clean(value) in {"", target_package})].copy()
 
     results: List[dict] = []
 
@@ -279,6 +368,72 @@ def analyze(
             (traffic_df["timestamp"] >= ui_time)
             & (traffic_df["timestamp"] <= ui_time + window_seconds)
         ].sort_values("timestamp")
+        matched_metadata = metadata_df[
+            (metadata_df["timestamp"] >= ui_time)
+            & (metadata_df["timestamp"] <= ui_time + window_seconds)
+        ].sort_values("timestamp")
+
+        if matched_traffic.empty and not matched_metadata.empty:
+            for _, metadata_row in matched_metadata.iterrows():
+                traffic_time = float(metadata_row["timestamp"])
+                delta = round(traffic_time - ui_time, 3)
+                domain = _clean(metadata_row.get("destination_host")).lower().rstrip(".")
+                decision = classify_risk(
+                    scheme="",
+                    domain=domain,
+                    ui_text=element_text,
+                    allowed_domains=allowed_domains,
+                    url="",
+                    time_delta=delta,
+                    event_id=event_id,
+                )
+                if decision.rule_id == "unreadable_traffic" and domain:
+                    severity = "Low" if is_allowed_domain(domain, allowed_domains) else "Medium"
+                    decision = RuleResult(
+                        rule_id="metadata_only",
+                        severity=severity,
+                        category="通信メタデータのみ",
+                        reason="VPN/pcap由来の通信メタデータは観測されましたが、HTTP本文は読めません。",
+                        signal="pcap_metadata",
+                    )
+                results.append(
+                    {
+                        "event_id": event_id,
+                        "app_package": app_package,
+                        "ui_timestamp": ui_time,
+                        "screen": screen,
+                        "action": action,
+                        "element_text": element_text,
+                        "traffic_timestamp": traffic_time,
+                        "time_delta": delta,
+                        "observability_status": observability_status_for_decision(decision),
+                        "metadata_source": _clean(metadata_row.get("source")) or "pcap",
+                        "destination_ip": _clean(metadata_row.get("destination_ip")),
+                        "destination_port": _clean(metadata_row.get("destination_port")),
+                        "protocol": _clean(metadata_row.get("protocol")),
+                        "bytes_sent": _clean(metadata_row.get("bytes_sent")),
+                        "bytes_received": _clean(metadata_row.get("bytes_received")),
+                        "domain": domain,
+                        "destination_party": destination_party(domain, allowed_domains),
+                        "scheme": "",
+                        "method": "",
+                        "url": "",
+                        "status_code": "",
+                        "content_type": "",
+                        "request_size": "",
+                        "response_size": "",
+                        "response_timestamp": "",
+                        "duration_ms": "",
+                        "error": "",
+                        "risk": decision.severity,
+                        "risk_category": decision.category,
+                        "risk_rule": decision.rule_id,
+                        "risk_signal": decision.signal,
+                        "data_categories": ";".join(decision.data_categories),
+                        "reason": decision.reason,
+                    }
+                )
+            continue
 
         if matched_traffic.empty:
             results.append(
@@ -291,7 +446,13 @@ def analyze(
                     "element_text": element_text,
                     "traffic_timestamp": "",
                     "time_delta": "",
-                    "observability_status": "none",
+                    "observability_status": no_traffic_status(traffic_log_had_rows, metadata_log_had_rows),
+                    "metadata_source": "",
+                    "destination_ip": "",
+                    "destination_port": "",
+                    "protocol": "",
+                    "bytes_sent": "",
+                    "bytes_received": "",
                     "domain": "",
                     "destination_party": "none",
                     "scheme": "",
@@ -304,12 +465,12 @@ def analyze(
                     "response_timestamp": "",
                     "duration_ms": "",
                     "error": "",
-                    "risk": "Low",
-                    "risk_category": "通信なし",
-                    "risk_rule": "no_traffic",
-                    "risk_signal": "no_request_in_window",
+                    "risk": "Unknown",
+                    "risk_category": "観測不能",
+                    "risk_rule": "no_observed_traffic",
+                    "risk_signal": "no_mitm_request_in_window",
                     "data_categories": "",
-                    "reason": f"操作後{window_seconds:g}秒以内に通信は観測されませんでした。",
+                    "reason": f"操作後{window_seconds:g}秒以内にmitmproxyで読める通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。",
                 }
             )
             continue
@@ -348,6 +509,7 @@ def analyze(
                     "traffic_timestamp": traffic_time,
                     "time_delta": delta,
                     "observability_status": observability_status_for_decision(decision),
+                    **_empty_metadata_fields(),
                     "domain": domain,
                     "destination_party": destination_party(domain, allowed_domains),
                     "scheme": scheme,
@@ -388,6 +550,8 @@ def parse_args() -> argparse.Namespace:
         dest="allowed_domains",
         help="First-party/allowlisted domain. Can be specified multiple times.",
     )
+    parser.add_argument("--target-package", default="", help="Only correlate UI/metadata rows belonging to this Android package.")
+    parser.add_argument("--metadata-log", default="", help="Optional VPN/pcap metadata CSV, for example PCAPdroid export normalized to pcap_metadata.csv.")
     parser.add_argument(
         "--include-system-probes",
         action="store_true",
@@ -406,6 +570,8 @@ if __name__ == "__main__":
             window_seconds=args.window,
             allowed_domains=args.allowed_domains,
             include_system_probes=args.include_system_probes,
+            target_package=args.target_package,
+            metadata_path=args.metadata_log,
         )
     except FileNotFoundError as exc:
         print(f"[Error] {exc}")

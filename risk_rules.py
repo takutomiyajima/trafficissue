@@ -219,7 +219,7 @@ def evaluate_traffic_risk(
         delta = float(time_delta)
     except (TypeError, ValueError):
         delta = None
-    if event_id == "E001" and delta is not None and 0 <= delta <= startup_window_seconds:
+    if event_id in {"E000", "E001"} and delta is not None and 0 <= delta <= startup_window_seconds:
         candidates.append(
             RuleResult(
                 rule_id="startup_transmission",

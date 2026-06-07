@@ -35,6 +35,8 @@ class LogPaths:
     ui: Path
     traffic: Path
     results: Path
+    static: Path
+    metadata: Path
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,8 @@ def default_log_paths(log_dir: Optional[Union[os.PathLike, str]] = None) -> LogP
         ui=base / "ui_events.csv",
         traffic=base / "traffic_logs.csv",
         results=base / "risk_results.csv",
+        static=base / "static_analysis.csv",
+        metadata=base / "pcap_metadata.csv",
     )
 
 
@@ -366,7 +370,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--package", help="Package name override if it cannot be extracted from the APK.")
     parser.add_argument("--max-events", type=int, default=30, help="Maximum number of UI taps to perform.")
     parser.add_argument("--wait", type=int, default=5, help="Seconds to wait after app start and each tap.")
-    parser.add_argument("--listen-port", type=int, default=8080, help="mitmproxy listen port.")
+    parser.add_argument("--listen-port", type=int, default=8082, help="mitmproxy listen port. Defaults to 8082 to avoid common 8080 conflicts.")
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR), help="Directory for ui_events.csv, traffic_logs.csv, risk_results.csv, and mitmdump.log.")
     parser.add_argument("--window", type=float, default=5.0, help="Seconds after each UI event to correlate traffic.")
     parser.add_argument(
@@ -381,6 +385,8 @@ def parse_args() -> argparse.Namespace:
         help="Include Android/Google connectivity probe traffic such as generate_204 in correlation results.",
     )
     parser.add_argument("--skip-capture", action="store_true", help="Do not start mitmdump; use an existing traffic_logs.csv instead.")
+    parser.add_argument("--skip-static", action="store_true", help="Skip lightweight APK static analysis.")
+    parser.add_argument("--metadata-log", help="Optional VPN/pcap metadata CSV to correlate with UI events. Defaults to <log-dir>/pcap_metadata.csv if present.")
     parser.add_argument(
         "--skip-proxy-setup",
         action="store_true",
@@ -412,6 +418,13 @@ def main() -> int:
     traffic_log_path = log_paths.traffic
     risk_results_path = log_paths.results
     mitmdump_log_path = Path(args.log_dir).resolve() / "mitmdump.log"
+    static_output_path = log_paths.static
+    metadata_log_path = Path(args.metadata_log).resolve() if args.metadata_log else log_paths.metadata
+
+    if not args.skip_static:
+        from static_analyzer import analyze_static
+
+        analyze_static(args.apk, str(static_output_path))
 
     mitm_proc = None if args.skip_capture else start_mitmproxy(
         args.listen_port,
@@ -471,6 +484,8 @@ def main() -> int:
         window_seconds=args.window,
         allowed_domains=args.allowed_domains,
         include_system_probes=args.include_system_probes,
+        target_package=args.package or "",
+        metadata_path=str(metadata_log_path) if metadata_log_path.exists() else "",
     )
     print(f"[DONE] Results are available in {risk_results_path}")
     return 0
