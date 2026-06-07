@@ -51,6 +51,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=30, help="Maximum number of UI taps to perform.")
     parser.add_argument("--wait", type=int, default=5, help="Seconds to wait after app start and each tap.")
     parser.add_argument("--listen-port", type=int, default=8080, help="mitmproxy listen port.")
+    parser.add_argument("--window", type=float, default=5.0, help="Seconds after each UI event to correlate traffic.")
+    parser.add_argument(
+        "--allowed-domain",
+        action="append",
+        dest="allowed_domains",
+        help="First-party/allowlisted domain. Can be specified multiple times.",
+    )
     parser.add_argument("--skip-capture", action="store_true", help="Do not start mitmdump; use an existing traffic_logs.csv instead.")
     return parser.parse_args()
 
@@ -74,7 +81,7 @@ def main() -> int:
 
     from analyze_logs import analyze
 
-    analyze()
+    analyze(window_seconds=args.window, allowed_domains=args.allowed_domains)
     print("[DONE] Results are available in logs/risk_results.csv")
     return 0
 

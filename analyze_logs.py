@@ -1,72 +1,236 @@
-import pandas as pd
-import os
+from __future__ import annotations
 
-def analyze():
-    ui_path = "logs/ui_events.csv"
-    traffic_path = "logs/traffic_logs.csv"
-    output_path = "logs/risk_results.csv"
-    
+import argparse
+import os
+from dataclasses import dataclass
+from typing import Iterable, List, Optional, Sequence
+
+
+
+DEFAULT_UI_PATH = "logs/ui_events.csv"
+DEFAULT_TRAFFIC_PATH = "logs/traffic_logs.csv"
+DEFAULT_OUTPUT_PATH = "logs/risk_results.csv"
+DEFAULT_WINDOW_SECONDS = 5.0
+DEFAULT_ALLOWED_DOMAINS = ("example.com", "api.example.com")
+LOCATION_KEYWORDS = ("location", "位置", "現在地", "地図", "map", "maps", "gps")
+MAPS_DOMAINS = ("maps.googleapis.com",)
+TRACKER_KEYWORDS = (
+    "doubleclick.net",
+    "googlesyndication.com",
+    "google-analytics.com",
+    "firebase-settings.crashlytics.com",
+    "app-measurement.com",
+    "facebook.com",
+    "adjust.com",
+    "appsflyer.com",
+)
+
+
+@dataclass(frozen=True)
+class RiskDecision:
+    risk: str
+    reason: str
+
+
+def _clean(value: object) -> str:
+    """Return a normalized string for CSV cells that may be NaN/None."""
+    if value is None or value != value:
+        return ""
+    return str(value).strip()
+
+
+def _is_allowed_domain(domain: str, allowed_domains: Sequence[str]) -> bool:
+    normalized_domain = domain.lower().rstrip(".")
+    for allowed in allowed_domains:
+        normalized_allowed = allowed.lower().strip().rstrip(".")
+        if not normalized_allowed:
+            continue
+        if normalized_domain == normalized_allowed or normalized_domain.endswith(f".{normalized_allowed}"):
+            return True
+    return False
+
+
+def _contains_any(value: str, keywords: Iterable[str]) -> bool:
+    normalized = value.lower()
+    return any(keyword.lower() in normalized for keyword in keywords)
+
+
+def classify_risk(
+    scheme: str,
+    domain: str,
+    ui_text: str,
+    allowed_domains: Sequence[str] = DEFAULT_ALLOWED_DOMAINS,
+) -> RiskDecision:
+    """Classify traffic risk using UI context, protocol, and destination domain."""
+    normalized_scheme = scheme.lower()
+    normalized_domain = domain.lower()
+    normalized_ui_text = ui_text.lower()
+
+    if not normalized_scheme or not normalized_domain:
+        return RiskDecision(
+            "Low",
+            "通信先ドメインまたは通信方式を取得できなかったため、リスク判定は保留扱いです。",
+        )
+
+    if normalized_scheme == "http":
+        return RiskDecision(
+            "High",
+            "UI操作後に暗号化されていないHTTP通信を検知しました（盗聴・改ざんリスク）。",
+        )
+
+    if _contains_any(normalized_domain, TRACKER_KEYWORDS):
+        return RiskDecision(
+            "High",
+            "UI操作後に広告・解析・トラッカー系ドメインへの通信を検知しました。",
+        )
+
+    if _contains_any(normalized_domain, MAPS_DOMAINS) and _contains_any(normalized_ui_text, LOCATION_KEYWORDS):
+        return RiskDecision(
+            "High",
+            "位置情報関連のUI操作後に地図APIへの通信を検知しました。位置情報送信の可能性があります。",
+        )
+
+    if normalized_scheme == "https":
+        if _is_allowed_domain(normalized_domain, allowed_domains):
+            return RiskDecision(
+                "Low",
+                "allowlist内のFirst-party HTTPS通信として扱いました。",
+            )
+        return RiskDecision(
+            "Middle",
+            "allowlist外のHTTPS通信を検知しました。HTTPSでも外部送信の可能性があるため注意が必要です。",
+        )
+
+    return RiskDecision(
+        "Middle",
+        f"未分類の通信方式（{scheme}）を検知しました。追加確認が必要です。",
+    )
+
+
+def _ensure_columns(df, columns: Sequence[str]):
+    for column in columns:
+        if column not in df.columns:
+            df[column] = ""
+    return df
+
+
+def analyze(
+    ui_path: str = DEFAULT_UI_PATH,
+    traffic_path: str = DEFAULT_TRAFFIC_PATH,
+    output_path: str = DEFAULT_OUTPUT_PATH,
+    window_seconds: float = DEFAULT_WINDOW_SECONDS,
+    allowed_domains: Optional[Sequence[str]] = None,
+):
+    import pandas as pd
+
+    allowed_domains = tuple(allowed_domains or DEFAULT_ALLOWED_DOMAINS)
+
     if not os.path.exists(ui_path) or not os.path.exists(traffic_path):
-        print("[Error] Logs not found. Please run capture and runner first.")
-        return
+        raise FileNotFoundError("Logs not found. Please run capture and runner first.")
 
     ui_df = pd.read_csv(ui_path)
     traffic_df = pd.read_csv(traffic_path)
-    
-    results = []
-    
-    for _, ui_row in ui_df.iterrows():
-        ui_time = ui_row['timestamp']
-        
-        # 条件：ボタンを押した瞬間（ui_time）から5秒以内の通信を抽出
+    ui_df = _ensure_columns(ui_df, ["event_id", "timestamp", "screen", "action", "element_text"])
+    traffic_df = _ensure_columns(traffic_df, ["timestamp", "scheme", "domain", "method", "url", "status_code"])
+
+    ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
+    traffic_df["timestamp"] = pd.to_numeric(traffic_df["timestamp"], errors="coerce")
+    traffic_df = traffic_df.dropna(subset=["timestamp"]).copy()
+
+    results: List[dict] = []
+
+    for _, ui_row in ui_df.dropna(subset=["timestamp"]).iterrows():
+        ui_time = float(ui_row["timestamp"])
+        event_id = _clean(ui_row.get("event_id"))
+        element_text = _clean(ui_row.get("element_text"))
+        screen = _clean(ui_row.get("screen"))
+        action = _clean(ui_row.get("action")) or "tap"
+
         matched_traffic = traffic_df[
-            (traffic_df['timestamp'] >= ui_time) & 
-            (traffic_df['timestamp'] <= ui_time + 5)
-        ]
-        
+            (traffic_df["timestamp"] >= ui_time)
+            & (traffic_df["timestamp"] <= ui_time + window_seconds)
+        ].sort_values("timestamp")
+
         if matched_traffic.empty:
-            results.append({
-                "event_id": ui_row['event_id'],
-                "element_text": ui_row['element_text'],
-                "domain": "None",
-                "scheme": "None",
-                "delta_time": 0,
-                "risk": "Low",
-                "reason": "この操作の直後に通信は検知されませんでした。"
-            })
-        else:
-            for _, t_row in matched_traffic.iterrows():
-                delta = t_row['timestamp'] - ui_time
-                risk = "Low"
-                reason = "暗号化された通常の通信、または既知のドメインです。"
-                
-                # Rule 1: HTTP通信の検知
-                if t_row['scheme'] == 'http':
-                    risk = "High"
-                    reason = "ボタン押下直後に暗号化されていないHTTP通信が発生しました（盗聴リスク）。"
-                
-                # Rule 2 & 3: 位置情報や外部ドメインの簡易判定
-                elif "maps.googleapis.com" in t_row['domain'] and "Location" in ui_row['element_text']:
-                    risk = "Middle"
-                    reason = "位置情報関連の操作直後に外部地図APIへの通信を検知。位置情報送信の可能性があります。"
-                
-                elif "example.com" not in t_row['domain'] and t_row['scheme'] == 'https':
-                    risk = "Middle"
-                    reason = "サードパーティ、または広告・トラッカー等の外部ドメインへの通信を検知しました。"
-                
-                results.append({
-                    "event_id": ui_row['event_id'],
-                    "element_text": ui_row['element_text'],
-                    "domain": t_row['domain'],
-                    "scheme": t_row['scheme'],
-                    "delta_time": f"{delta}s",
-                    "risk": risk,
-                    "reason": reason
-                })
-                
+            results.append(
+                {
+                    "event_id": event_id,
+                    "ui_timestamp": ui_time,
+                    "screen": screen,
+                    "action": action,
+                    "element_text": element_text,
+                    "traffic_timestamp": "",
+                    "time_delta": "",
+                    "observability_status": "none",
+                    "domain": "",
+                    "scheme": "",
+                    "method": "",
+                    "url": "",
+                    "status_code": "",
+                    "risk": "Low",
+                    "reason": f"操作後{window_seconds:g}秒以内に通信は観測されませんでした。",
+                }
+            )
+            continue
+
+        for _, traffic_row in matched_traffic.iterrows():
+            traffic_time = float(traffic_row["timestamp"])
+            delta = traffic_time - ui_time
+            scheme = _clean(traffic_row.get("scheme"))
+            domain = _clean(traffic_row.get("domain"))
+            decision = classify_risk(scheme, domain, element_text, allowed_domains)
+
+            results.append(
+                {
+                    "event_id": event_id,
+                    "ui_timestamp": ui_time,
+                    "screen": screen,
+                    "action": action,
+                    "element_text": element_text,
+                    "traffic_timestamp": traffic_time,
+                    "time_delta": round(delta, 3),
+                    "observability_status": "observed",
+                    "domain": domain,
+                    "scheme": scheme,
+                    "method": _clean(traffic_row.get("method")),
+                    "url": _clean(traffic_row.get("url")),
+                    "status_code": _clean(traffic_row.get("status_code")),
+                    "risk": decision.risk,
+                    "reason": decision.reason,
+                }
+            )
+
     res_df = pd.DataFrame(results)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     res_df.to_csv(output_path, index=False)
     print(f"[Analyzer] Analysis complete. Saved to {output_path}")
+    return res_df
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Correlate Android UI events with traffic logs and classify risk.")
+    parser.add_argument("--ui-log", default=DEFAULT_UI_PATH, help="Path to ui_events.csv.")
+    parser.add_argument("--traffic-log", default=DEFAULT_TRAFFIC_PATH, help="Path to traffic_logs.csv.")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT_PATH, help="Path to write risk_results.csv.")
+    parser.add_argument("--window", type=float, default=DEFAULT_WINDOW_SECONDS, help="Seconds after each UI event to correlate traffic.")
+    parser.add_argument(
+        "--allowed-domain",
+        action="append",
+        dest="allowed_domains",
+        help="First-party/allowlisted domain. Can be specified multiple times.",
+    )
+    return parser.parse_args()
+
 
 if __name__ == "__main__":
-    analyze()
+    args = parse_args()
+    try:
+        analyze(
+            ui_path=args.ui_log,
+            traffic_path=args.traffic_log,
+            output_path=args.output,
+            window_seconds=args.window,
+            allowed_domains=args.allowed_domains,
+        )
+    except FileNotFoundError as exc:
+        print(f"[Error] {exc}")
