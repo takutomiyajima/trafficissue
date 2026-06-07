@@ -80,20 +80,42 @@ class RunAnalysisProxyTest(unittest.TestCase):
             previous_cwd = os.getcwd()
             os.chdir(tmp)
             try:
-                proc = run_analysis.start_mitmproxy(8080)
+                traffic_path = Path(tmp) / "logs" / "traffic_logs.csv"
+                proc = run_analysis.start_mitmproxy(8080, traffic_path=traffic_path)
 
                 self.assertIs(proc, mock_popen.return_value)
-                traffic_path = Path(tmp) / "logs" / "traffic_logs.csv"
                 self.assertEqual(
                     traffic_path.read_text(encoding="utf-8"),
                     "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
                 )
                 command = mock_popen.call_args.args[0]
-                self.assertIn(str(Path(tmp) / "capture_traffic.py"), command)
+                self.assertIn(str(run_analysis.CAPTURE_SCRIPT_PATH), command)
                 self.assertIn("block_global=false", command)
                 self.assertEqual(mock_popen.call_args.kwargs["env"]["TRAFFIC_LOG_PATH"], str(traffic_path))
             finally:
                 os.chdir(previous_cwd)
+
+    @patch("run_analysis.time.sleep")
+    @patch("run_analysis.subprocess.Popen")
+    @patch("run_analysis.shutil.which", return_value="/usr/local/bin/mitmdump")
+    def test_start_mitmproxy_reports_early_exit_and_returns_none(self, mock_which, mock_popen, mock_sleep):
+        class FakeProcess:
+            returncode = 1
+
+            def poll(self):
+                return self.returncode
+
+        mock_popen.return_value = FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                proc = run_analysis.start_mitmproxy(8080, traffic_path=Path(tmp) / "traffic_logs.csv")
+
+        self.assertIsNone(proc)
+        warning = output.getvalue()
+        self.assertIn("mitmdump exited early", warning)
+        self.assertIn("--skip-capture", warning)
 
     def test_warn_if_no_traffic_records_reports_header_only_log(self):
         with tempfile.TemporaryDirectory() as tmp:
