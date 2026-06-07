@@ -128,6 +128,71 @@ class CaptureTrafficTest(unittest.TestCase):
                     rows[1],
                 )
 
+    def test_http_connect_logs_https_tunnel_before_tls_request(self):
+        with fake_capture_traffic_module() as capture_traffic:
+            with tempfile.TemporaryDirectory() as tmp:
+                csv_path = Path(tmp) / "traffic_logs.csv"
+                logger = capture_traffic.TrafficLogger(str(csv_path))
+                flow = types.SimpleNamespace(
+                    id="connect-1",
+                    request=types.SimpleNamespace(
+                        scheme="http",
+                        host="secure.example.com",
+                        port=443,
+                        method="CONNECT",
+                        url="secure.example.com:443",
+                        headers={},
+                        raw_content=b"",
+                    ),
+                    response=None,
+                )
+
+                logger.http_connect(flow)
+
+                rows = csv_path.read_text(encoding="utf-8").strip().splitlines()
+                self.assertEqual(len(rows), 2)
+                self.assertIn(
+                    "https,secure.example.com,CONNECT,https://secure.example.com:443,0",
+                    rows[1],
+                )
+                self.assertIn("https_connect_tunnel", rows[1])
+
+    def test_request_replaces_connect_tunnel_row_when_https_is_intercepted(self):
+        with fake_capture_traffic_module() as capture_traffic:
+            with tempfile.TemporaryDirectory() as tmp:
+                csv_path = Path(tmp) / "traffic_logs.csv"
+                logger = capture_traffic.TrafficLogger(str(csv_path))
+                flow = types.SimpleNamespace(
+                    id="connect-2",
+                    request=types.SimpleNamespace(
+                        scheme="http",
+                        host="secure.example.com",
+                        port=443,
+                        method="CONNECT",
+                        url="secure.example.com:443",
+                        headers={},
+                        raw_content=b"",
+                    ),
+                    response=None,
+                )
+
+                logger.http_connect(flow)
+                flow.request = types.SimpleNamespace(
+                    scheme="https",
+                    host="secure.example.com",
+                    port=443,
+                    method="GET",
+                    url="https://secure.example.com/profile",
+                    headers={},
+                    raw_content=b"",
+                )
+                logger.request(flow)
+
+                rows = csv_path.read_text(encoding="utf-8").strip().splitlines()
+                self.assertEqual(len(rows), 2)
+                self.assertIn("https,secure.example.com,GET,https://secure.example.com/profile,0", rows[1])
+                self.assertNotIn("https_connect_tunnel", rows[1])
+
 
 if __name__ == "__main__":
     unittest.main()
