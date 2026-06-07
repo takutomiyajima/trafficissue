@@ -37,6 +37,15 @@ class LogPaths:
     results: Path
 
 
+@dataclass(frozen=True)
+class ProxyCaptureProbe:
+    attempted: bool
+    captured: bool
+    before_count: int
+    after_count: int
+    message: str
+
+
 def default_log_paths(log_dir: Optional[Union[os.PathLike, str]] = None) -> LogPaths:
     """Return canonical repo-relative log paths used by capture, UI automation, and analysis."""
     base = Path(log_dir) if log_dir is not None else DEFAULT_LOG_DIR
@@ -147,6 +156,89 @@ def start_mitmproxy(
             print(f"[MITM] No mitmdump output was written to {mitmdump_log_path}.")
         return None
     return proc
+
+
+def count_traffic_records(traffic_path: Union[os.PathLike, str] = DEFAULT_TRAFFIC_LOG_PATH) -> int:
+    if not os.path.exists(traffic_path):
+        return 0
+    with open(traffic_path, encoding="utf-8") as f:
+        return max(sum(1 for _ in f) - 1, 0)
+
+
+def probe_proxy_capture(
+    traffic_path: Union[os.PathLike, str],
+    proxy_state: ProxyState,
+    serial: Optional[str] = None,
+) -> ProxyCaptureProbe:
+    """Try a device-side HTTP request through mitmproxy to distinguish capture issues from app issues."""
+    before_count = count_traffic_records(traffic_path)
+    probe_url = f"http://example.com/?trafficissue_proxy_probe={int(time.time())}"
+    proxy_url = f"http://{proxy_state.host}:{proxy_state.port}"
+    shell_script = (
+        "if command -v curl >/dev/null 2>&1; then "
+        f"curl -x {proxy_url} -m 5 -sS -o /dev/null {probe_url}; "
+        "else exit 127; fi"
+    )
+
+    print(f"[MITM] Verifying Android -> mitmproxy capture path with curl via {proxy_url}")
+    result = adb_shell(["sh", "-c", shell_script], serial=serial, check=False)
+    time.sleep(0.5)
+    after_count = count_traffic_records(traffic_path)
+
+    if after_count > before_count:
+        message = "Android shell curl reached mitmproxy; capture path is working for explicit-proxy HTTP."
+        print(f"[MITM] Proxy capture probe OK: {message}")
+        return ProxyCaptureProbe(True, True, before_count, after_count, message)
+
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode == 127:
+        message = "Android shell does not provide curl, so automatic proxy capture verification was skipped."
+    else:
+        message = (
+            "Android shell curl did not produce a mitmproxy log row. "
+            f"returncode={result.returncode}; output={output or '(no output)'}"
+        )
+    print(f"[WARN] {message}")
+    return ProxyCaptureProbe(True, False, before_count, after_count, message)
+
+
+def warn_if_no_app_traffic_records(
+    traffic_path: Union[os.PathLike, str],
+    baseline_count: int,
+    probe: Optional[ProxyCaptureProbe] = None,
+    mitmdump_log_path: Optional[Union[os.PathLike, str]] = None,
+) -> None:
+    total_count = count_traffic_records(traffic_path)
+    if total_count > baseline_count:
+        return
+
+    if baseline_count > 0:
+        print(
+            f"[WARN] No app traffic was captured after UI automation. {traffic_path} contains {total_count} "
+            "request(s), but they were recorded before the app actions (for example the proxy smoke test)."
+        )
+    else:
+        print(
+            f"[WARN] {traffic_path} contains only the header and no captured requests. Check that the app uses the "
+            "configured Android HTTP proxy and the tested actions actually perform network requests. For Android Emulator, "
+            "try --proxy-host 10.0.2.2 --no-adb-reverse if needed; for HTTPS, install/trust the mitmproxy CA or use "
+            "HTTP test endpoints first."
+        )
+
+    if probe is not None:
+        if probe.captured:
+            print(
+                "[WARN] The Android shell proxy probe was captured, so mitmproxy itself is reachable. "
+                "The app may be bypassing Android's global HTTP proxy, using a direct socket/native stack, or not issuing "
+                "the expected requests."
+            )
+        elif probe.attempted:
+            print(f"[WARN] Proxy capture probe did not confirm reachability: {probe.message}")
+
+    if mitmdump_log_path:
+        details = _tail_text(mitmdump_log_path)
+        if details:
+            print(f"[MITM] Last mitmdump log lines:\n{details}")
 
 
 def warn_if_no_traffic_records(traffic_path: Union[os.PathLike, str] = DEFAULT_TRAFFIC_LOG_PATH) -> None:
@@ -327,6 +419,8 @@ def main() -> int:
         mitmdump_log_path=mitmdump_log_path,
     )
     proxy_state = None
+    proxy_probe = None
+    app_traffic_baseline_count = 0
     try:
         if not args.skip_capture and not args.skip_proxy_setup and mitm_proc is not None:
             proxy_state = setup_device_proxy(
@@ -335,6 +429,9 @@ def main() -> int:
                 proxy_host=args.proxy_host,
                 use_adb_reverse=not args.no_adb_reverse,
             )
+            proxy_probe = probe_proxy_capture(traffic_log_path, proxy_state, serial=args.serial)
+
+        app_traffic_baseline_count = count_traffic_records(traffic_log_path)
 
         command = [
             sys.executable,
@@ -358,7 +455,12 @@ def main() -> int:
         stop_process(mitm_proc)
 
     if not args.skip_capture:
-        warn_if_no_traffic_records(traffic_log_path)
+        warn_if_no_app_traffic_records(
+            traffic_log_path,
+            app_traffic_baseline_count,
+            probe=proxy_probe,
+            mitmdump_log_path=mitmdump_log_path,
+        )
 
     from analyze_logs import analyze
 
