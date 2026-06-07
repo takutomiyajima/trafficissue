@@ -145,6 +145,70 @@ class RunAnalysisProxyTest(unittest.TestCase):
             self.assertIn("contains only the header", warning)
             self.assertIn("--proxy-host 10.0.2.2 --no-adb-reverse", warning)
 
+    def test_count_traffic_records_ignores_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            traffic_path = Path(tmp) / "traffic_logs.csv"
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n"
+                "100,http,example.com,GET,http://example.com,200,,0,10\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(run_analysis.count_traffic_records(traffic_path), 1)
+
+    @patch("run_analysis.time.sleep")
+    @patch("run_analysis.adb_shell")
+    def test_probe_proxy_capture_reports_success_when_curl_adds_log_row(self, mock_adb_shell, mock_sleep):
+        with tempfile.TemporaryDirectory() as tmp:
+            traffic_path = Path(tmp) / "traffic_logs.csv"
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
+                encoding="utf-8",
+            )
+
+            def adb_shell_side_effect(command, serial=None, check=True):
+                with traffic_path.open("a", encoding="utf-8") as f:
+                    f.write("100,http,example.com,GET,http://example.com/?trafficissue_proxy_probe=1,200,,0,10\n")
+                return run_analysis.subprocess.CompletedProcess(["adb"], 0, stdout="", stderr="")
+
+            mock_adb_shell.side_effect = adb_shell_side_effect
+            state = run_analysis.ProxyState("10.0.2.2", 8080, "", False)
+
+            result = run_analysis.probe_proxy_capture(traffic_path, state, serial="emulator-5554")
+
+            self.assertTrue(result.attempted)
+            self.assertTrue(result.captured)
+            self.assertEqual(result.before_count, 0)
+            self.assertEqual(result.after_count, 1)
+            command = mock_adb_shell.call_args.args[0]
+            self.assertIn("curl -x http://10.0.2.2:8080", command[2])
+
+    def test_warn_if_no_app_traffic_records_reports_probe_only_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            traffic_path = Path(tmp) / "traffic_logs.csv"
+            mitm_log_path = Path(tmp) / "mitmdump.log"
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n"
+                "100,http,example.com,GET,http://example.com/?trafficissue_proxy_probe=1,200,,0,10\n",
+                encoding="utf-8",
+            )
+            mitm_log_path.write_text("proxy server listening\n", encoding="utf-8")
+            probe = run_analysis.ProxyCaptureProbe(True, True, 0, 1, "ok")
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                run_analysis.warn_if_no_app_traffic_records(
+                    traffic_path,
+                    baseline_count=1,
+                    probe=probe,
+                    mitmdump_log_path=mitm_log_path,
+                )
+
+            warning = output.getvalue()
+            self.assertIn("No app traffic was captured", warning)
+            self.assertIn("mitmproxy itself is reachable", warning)
+            self.assertIn("Last mitmdump log lines", warning)
+
 
 if __name__ == "__main__":
     unittest.main()
