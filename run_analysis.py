@@ -157,6 +157,11 @@ def parse_args() -> argparse.Namespace:
         dest="allowed_domains",
         help="First-party/allowlisted domain. Can be specified multiple times.",
     )
+    parser.add_argument(
+        "--include-system-probes",
+        action="store_true",
+        help="Include Android/Google connectivity probe traffic such as generate_204 in correlation results.",
+    )
     parser.add_argument("--skip-capture", action="store_true", help="Do not start mitmdump; use an existing traffic_logs.csv instead.")
     parser.add_argument(
         "--skip-proxy-setup",
@@ -207,7 +212,11 @@ def main() -> int:
 
     from analyze_logs import analyze
 
-    analyze(window_seconds=args.window, allowed_domains=args.allowed_domains)
+    analyze(
+        window_seconds=args.window,
+        allowed_domains=args.allowed_domains,
+        include_system_probes=args.include_system_probes,
+    )
     print("[DONE] Results are available in logs/risk_results.csv")
     return 0
 

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
 
 
-
 DEFAULT_UI_PATH = "logs/ui_events.csv"
 DEFAULT_TRAFFIC_PATH = "logs/traffic_logs.csv"
 DEFAULT_OUTPUT_PATH = "logs/risk_results.csv"
@@ -14,6 +13,12 @@ DEFAULT_WINDOW_SECONDS = 5.0
 DEFAULT_ALLOWED_DOMAINS = ("example.com", "api.example.com")
 LOCATION_KEYWORDS = ("location", "位置", "現在地", "地図", "map", "maps", "gps")
 MAPS_DOMAINS = ("maps.googleapis.com",)
+SYSTEM_CONNECTIVITY_CHECK_DOMAINS = (
+    "connectivitycheck.gstatic.com",
+    "www.google.com",
+    "play.googleapis.com",
+)
+SYSTEM_CONNECTIVITY_CHECK_PATHS = ("/generate_204", "/gen_204")
 TRACKER_KEYWORDS = (
     "doubleclick.net",
     "googlesyndication.com",
@@ -53,6 +58,23 @@ def _is_allowed_domain(domain: str, allowed_domains: Sequence[str]) -> bool:
 def _contains_any(value: str, keywords: Iterable[str]) -> bool:
     normalized = value.lower()
     return any(keyword.lower() in normalized for keyword in keywords)
+
+
+def is_system_connectivity_probe(scheme: str, domain: str, url: str, status_code: object = "") -> bool:
+    """Return True for Android/Google connectivity checks that are not app-initiated traffic."""
+    from urllib.parse import urlparse
+
+    normalized_scheme = scheme.lower().strip()
+    normalized_domain = domain.lower().strip().rstrip(".")
+    if normalized_scheme != "http" or not _is_allowed_domain(normalized_domain, SYSTEM_CONNECTIVITY_CHECK_DOMAINS):
+        return False
+
+    path = urlparse(url).path if url else ""
+    if path not in SYSTEM_CONNECTIVITY_CHECK_PATHS:
+        return False
+
+    normalized_status = _clean(status_code)
+    return normalized_status in {"", "0", "204", "204.0"}
 
 
 def classify_risk(
@@ -120,6 +142,7 @@ def analyze(
     output_path: str = DEFAULT_OUTPUT_PATH,
     window_seconds: float = DEFAULT_WINDOW_SECONDS,
     allowed_domains: Optional[Sequence[str]] = None,
+    include_system_probes: bool = False,
 ):
     import pandas as pd
 
@@ -136,6 +159,19 @@ def analyze(
     ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
     traffic_df["timestamp"] = pd.to_numeric(traffic_df["timestamp"], errors="coerce")
     traffic_df = traffic_df.dropna(subset=["timestamp"]).copy()
+    traffic_df = traffic_df.drop_duplicates(subset=["timestamp", "scheme", "domain", "method", "url", "status_code"])
+
+    if not include_system_probes:
+        system_probe_mask = traffic_df.apply(
+            lambda row: is_system_connectivity_probe(
+                _clean(row.get("scheme")),
+                _clean(row.get("domain")),
+                _clean(row.get("url")),
+                row.get("status_code"),
+            ),
+            axis=1,
+        )
+        traffic_df = traffic_df[~system_probe_mask].copy()
 
     results: List[dict] = []
 
@@ -219,6 +255,11 @@ def parse_args() -> argparse.Namespace:
         dest="allowed_domains",
         help="First-party/allowlisted domain. Can be specified multiple times.",
     )
+    parser.add_argument(
+        "--include-system-probes",
+        action="store_true",
+        help="Include Android/Google connectivity probe traffic such as generate_204 in correlation results.",
+    )
     return parser.parse_args()
 
 
@@ -231,6 +272,7 @@ if __name__ == "__main__":
             output_path=args.output,
             window_seconds=args.window,
             allowed_domains=args.allowed_domains,
+            include_system_probes=args.include_system_probes,
         )
     except FileNotFoundError as exc:
         print(f"[Error] {exc}")
