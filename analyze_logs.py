@@ -161,7 +161,7 @@ def analyze(
     traffic_df = traffic_df.dropna(subset=["timestamp"]).copy()
     traffic_df = traffic_df.drop_duplicates(subset=TRAFFIC_COLUMNS)
 
-    if not include_system_probes:
+    if not include_system_probes and not traffic_df.empty:
         system_probe_mask = traffic_df.apply(
             lambda row: is_system_connectivity_probe(
                 _clean(row.get("scheme")),
@@ -172,6 +172,7 @@ def analyze(
             axis=1,
         )
         traffic_df = traffic_df[~system_probe_mask].copy()
+        traffic_df = _ensure_columns(traffic_df, TRAFFIC_COLUMNS)
 
     results: List[dict] = []
 
