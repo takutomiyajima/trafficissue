@@ -1,7 +1,7 @@
-event_id,ui_timestamp,screen,action,element_text,traffic_timestamp,time_delta,observability_status,domain,scheme,method,url,status_code,risk,risk_category,reason
-E001,1780631919,Home,tap,Get Ticket,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
-E002,1780631925,Home,tap,TopTab_1,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
-E003,1780631930,Home,tap,TopTab_2,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
-E004,1780631935,Home,tap,TopTab_3,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
-E005,1780631940,Home,tap,TopTab_4,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
-E006,1780631946,Home,tap,TopTab_5,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
+event_id,app_package,ui_timestamp,screen,action,element_text,traffic_timestamp,time_delta,observability_status,metadata_source,destination_ip,destination_port,protocol,bytes_sent,bytes_received,domain,destination_party,scheme,method,url,status_code,content_type,request_size,response_size,response_timestamp,duration_ms,error,risk,risk_category,risk_rule,risk_signal,data_categories,reason
+E001,,1780631919,Home,tap,Get Ticket,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E002,,1780631925,Home,tap,TopTab_1,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E003,,1780631930,Home,tap,TopTab_2,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E004,,1780631935,Home,tap,TopTab_3,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E005,,1780631940,Home,tap,TopTab_4,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E006,,1780631946,Home,tap,TopTab_5,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。

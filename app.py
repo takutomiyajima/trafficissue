@@ -8,10 +8,15 @@ import streamlit as st
 
 st.set_page_config(page_title="通信ログ・危険通信チェック", layout="wide")
 
-st.title("通信ログ・危険通信チェック")
+st.title("UI操作 × 通信観測可能性チェック")
 st.markdown(
-    "UI操作ログ・mitmproxy通信ログ・任意のVPN/pcapメタデータを時系列で突合し、"
-    "リスク分類と観測可能性（observed / metadata_only / not_observed / capture_failed など）を分けて表示します。"
+    "UI操作ログ・mitmproxy通信ログ・VPN/pcapメタデータを時系列で突合し、"
+    "通信の発生原因と観測可能性（observed / metadata_only / not_observed / capture_failed など）を分けて表示します。"
+)
+st.info(
+    "研究方針: mitmproxy regular modeはHTTP/HTTPS本文を読めた場合の詳細解析に使い、"
+    "PCAPdroid等のVPN/pcapメタデータを主な通信先観測ログとして併用します。"
+    "未観測イベントはLowではなくUnknownとして扱います。"
 )
 
 DEFAULT_ALLOWED_DOMAINS = "example.com\napi.example.com"
@@ -44,7 +49,11 @@ def overall_risk_label(df):
 
 
 st.sidebar.header("ログ再判定")
-st.sidebar.caption("APK自動操作などの複雑な操作は置かず、既に取れている通信ログを確認・判定します。")
+st.sidebar.caption("PCAPdroid等のVPN/pcap CSVを logs/pcap_metadata.csv に正規化してから、UIログと通信観測ログを対応付けます。")
+st.sidebar.code(
+    "python normalize_pcap_metadata.py raw_pcapdroid.csv --output logs/pcap_metadata.csv",
+    language="bash",
+)
 traffic_log_path = st.sidebar.text_input("mitmproxy通信ログCSV", "logs/traffic_logs.csv")
 metadata_log_path = st.sidebar.text_input("VPN/pcapメタデータCSV（任意）", "logs/pcap_metadata.csv")
 risk_result_path = st.sidebar.text_input("判定結果CSV", "logs/risk_results.csv")
@@ -130,6 +139,11 @@ if os.path.exists(result_file):
     error_count = len(observed_df[observed_df["error"].astype(str).str.len() > 0])
 
     st.subheader("サマリー")
+    summary_source_df = df.copy()
+    summary_source_df["metadata_source"] = summary_source_df["metadata_source"].fillna("").replace("", "(none)")
+    source_summary = summary_source_df.groupby(["observability_status", "metadata_source"]).size().reset_index(name="count")
+    st.caption("observed=mitmproxyで本文/URLまで読めた通信、metadata_only=VPN/pcapで通信先メタデータのみ観測、not_observed/capture_failed=通信なしとは断定しない未観測です。")
+    st.dataframe(source_summary, width="stretch")
     cols = st.columns(8)
     cols[0].metric("観測通信数", total_traffic)
     cols[1].metric("本文未読/メタデータ", unreadable_count)

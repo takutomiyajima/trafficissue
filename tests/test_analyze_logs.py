@@ -403,6 +403,116 @@ class AnalyzeLogsTest(unittest.TestCase):
             self.assertEqual(first["destination_ip"], "203.0.113.10")
             self.assertEqual(first["risk_rule"], "metadata_only")
 
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_keeps_mitm_and_pcap_rows_for_comparison(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            metadata_path = base / "pcap_metadata.csv"
+            output_path = base / "risk_results.csv"
+
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E001,100.0,com.example/.MainActivity,tap,Open Page\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n"
+                "101.0,https,api.example.com,GET,https://api.example.com,200,application/json,0,20\n",
+                encoding="utf-8",
+            )
+            metadata_path.write_text(
+                "timestamp,package,destination_host,destination_ip,destination_port,protocol,bytes_sent,bytes_received,source\n"
+                "101.2,com.example,api.example.com,203.0.113.10,443,TCP,120,500,pcapdroid\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(
+                str(ui_path),
+                str(traffic_path),
+                str(output_path),
+                window_seconds=5,
+                metadata_path=str(metadata_path),
+                allowed_domains=("example.com",),
+            )
+
+            self.assertEqual(set(df["observability_status"]), {"observed", "metadata_only"})
+            self.assertEqual(set(df["metadata_source"]), {"mitmproxy", "pcapdroid"})
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_marks_ip_only_pcap_as_metadata_only_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            metadata_path = base / "pcap_metadata.csv"
+            output_path = base / "risk_results.csv"
+
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E001,100.0,com.example/.MainActivity,tap,Open Page\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
+                encoding="utf-8",
+            )
+            metadata_path.write_text(
+                "timestamp,package,destination_ip,destination_port,protocol,bytes_sent,bytes_received,source\n"
+                "101.2,com.example,203.0.113.10,443,TCP,120,500,pcapdroid\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(
+                str(ui_path),
+                str(traffic_path),
+                str(output_path),
+                window_seconds=5,
+                metadata_path=str(metadata_path),
+                allowed_domains=("example.com",),
+            )
+
+            first = df.iloc[0]
+            self.assertEqual(first["observability_status"], "metadata_only")
+            self.assertEqual(first["risk"], "Unknown")
+            self.assertEqual(first["risk_rule"], "metadata_only")
+            self.assertEqual(first["destination_ip"], "203.0.113.10")
+            self.assertIn("宛先IPのみ", first["reason"])
+
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_can_classify_metadata_log_without_ui_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            traffic_path = base / "traffic_logs.csv"
+            metadata_path = base / "pcap_metadata.csv"
+            output_path = base / "risk_results.csv"
+
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
+                encoding="utf-8",
+            )
+            metadata_path.write_text(
+                "timestamp,package,destination_host,destination_ip,destination_port,protocol,bytes_sent,bytes_received,source\n"
+                "101.2,com.example,collector.example.net,203.0.113.10,443,TCP,120,500,pcapdroid\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(
+                str(base / "missing_ui_events.csv"),
+                str(traffic_path),
+                str(output_path),
+                metadata_path=str(metadata_path),
+                allowed_domains=("example.com",),
+            )
+
+            first = df.iloc[0]
+            self.assertEqual(first["event_id"], "M001")
+            self.assertEqual(first["observability_status"], "metadata_only")
+            self.assertEqual(first["domain"], "collector.example.net")
+
+
 
 if __name__ == "__main__":
     unittest.main()
