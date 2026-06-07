@@ -86,6 +86,11 @@ if os.path.exists(result_file):
     col2.metric("⚠️ High リスク (HTTP/Tracker/位置情報等)", len(df[df['risk'] == 'High']))
     col3.metric("🔔 Middle リスク (allowlist外HTTPS等)", len(df[df['risk'] == 'Middle']))
 
+    if 'risk_category' in df.columns:
+        category_summary = df.groupby(['risk', 'risk_category']).size().reset_index(name='count')
+        st.subheader("🏷️ 通信リスク分類サマリー")
+        st.dataframe(category_summary, width="stretch")
+
     if 'observability_status' in df.columns:
         observed_count = len(df[df['observability_status'] == 'observed'])
         none_count = len(df[df['observability_status'] == 'none'])
@@ -93,7 +98,16 @@ if os.path.exists(result_file):
     
     st.write("---")
     st.subheader("🔍 判定結果（タイムスタンプ突合）")
-    
+
+    if 'risk_category' in df.columns:
+        selected_categories = st.multiselect(
+            "表示するリスク分類",
+            options=sorted(df['risk_category'].dropna().unique()),
+            default=sorted(df['risk_category'].dropna().unique()),
+        )
+        if selected_categories:
+            df = df[df['risk_category'].isin(selected_categories)]
+
     # 行の色分けルール
     def color_risk(row):
         styles = [''] * len(row)

@@ -21,6 +21,7 @@ RESULT_COLUMNS = [
     "url",
     "status_code",
     "risk",
+    "risk_category",
     "reason",
 ]
 
@@ -53,6 +54,7 @@ TRACKER_KEYWORDS = (
 @dataclass(frozen=True)
 class RiskDecision:
     risk: str
+    risk_category: str
     reason: str
 
 
@@ -110,24 +112,28 @@ def classify_risk(
     if not normalized_scheme or not normalized_domain:
         return RiskDecision(
             "Low",
+            "判定保留",
             "通信先ドメインまたは通信方式を取得できなかったため、リスク判定は保留扱いです。",
         )
 
     if normalized_scheme == "http":
         return RiskDecision(
             "High",
+            "平文HTTP通信",
             "UI操作後に暗号化されていないHTTP通信を検知しました（盗聴・改ざんリスク）。",
         )
 
     if _contains_any(normalized_domain, TRACKER_KEYWORDS):
         return RiskDecision(
             "High",
+            "広告・解析トラッカー",
             "UI操作後に広告・解析・トラッカー系ドメインへの通信を検知しました。",
         )
 
     if _contains_any(normalized_domain, MAPS_DOMAINS) and _contains_any(normalized_ui_text, LOCATION_KEYWORDS):
         return RiskDecision(
             "High",
+            "位置情報関連通信",
             "位置情報関連のUI操作後に地図APIへの通信を検知しました。位置情報送信の可能性があります。",
         )
 
@@ -135,15 +141,18 @@ def classify_risk(
         if _is_allowed_domain(normalized_domain, allowed_domains):
             return RiskDecision(
                 "Low",
+                "First-party HTTPS",
                 "allowlist内のFirst-party HTTPS通信として扱いました。",
             )
         return RiskDecision(
             "Middle",
+            "外部HTTPS通信",
             "allowlist外のHTTPS通信を検知しました。HTTPSでも外部送信の可能性があるため注意が必要です。",
         )
 
     return RiskDecision(
         "Middle",
+        "未分類プロトコル",
         f"未分類の通信方式（{scheme}）を検知しました。追加確認が必要です。",
     )
 
@@ -242,6 +251,7 @@ def analyze(
                     "url": "",
                     "status_code": "",
                     "risk": "Low",
+                    "risk_category": "通信なし",
                     "reason": f"操作後{window_seconds:g}秒以内に通信は観測されませんでした。",
                 }
             )
@@ -270,6 +280,7 @@ def analyze(
                     "url": _clean(traffic_row.get("url")),
                     "status_code": _clean(traffic_row.get("status_code")),
                     "risk": decision.risk,
+                    "risk_category": decision.risk_category,
                     "reason": decision.reason,
                 }
             )

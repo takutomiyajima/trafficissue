@@ -15,13 +15,25 @@ def has_pandas() -> bool:
 
 class AnalyzeLogsTest(unittest.TestCase):
     def test_classify_https_allowlist_and_external(self):
-        self.assertEqual(classify_risk("https", "api.example.com", "Login").risk, "Low")
-        self.assertEqual(classify_risk("https", "unknown-site.com", "Open Page").risk, "Middle")
+        first_party = classify_risk("https", "api.example.com", "Login")
+        external = classify_risk("https", "unknown-site.com", "Open Page")
+
+        self.assertEqual(first_party.risk, "Low")
+        self.assertEqual(first_party.risk_category, "First-party HTTPS")
+        self.assertEqual(external.risk, "Middle")
+        self.assertEqual(external.risk_category, "外部HTTPS通信")
 
     def test_classify_high_risks(self):
-        self.assertEqual(classify_risk("http", "plain.example.net", "Open").risk, "High")
-        self.assertEqual(classify_risk("https", "maps.googleapis.com", "Location").risk, "High")
-        self.assertEqual(classify_risk("https", "stats.doubleclick.net", "Open").risk, "High")
+        plain_http = classify_risk("http", "plain.example.net", "Open")
+        location_api = classify_risk("https", "maps.googleapis.com", "Location")
+        tracker = classify_risk("https", "stats.doubleclick.net", "Open")
+
+        self.assertEqual(plain_http.risk, "High")
+        self.assertEqual(plain_http.risk_category, "平文HTTP通信")
+        self.assertEqual(location_api.risk, "High")
+        self.assertEqual(location_api.risk_category, "位置情報関連通信")
+        self.assertEqual(tracker.risk, "High")
+        self.assertEqual(tracker.risk_category, "広告・解析トラッカー")
 
     def test_identifies_android_connectivity_probe_noise(self):
         self.assertTrue(
@@ -76,11 +88,13 @@ class AnalyzeLogsTest(unittest.TestCase):
             self.assertEqual(first["observability_status"], "observed")
             self.assertEqual(first["time_delta"], 0.75)
             self.assertEqual(first["risk"], "Middle")
+            self.assertEqual(first["risk_category"], "外部HTTPS通信")
             self.assertIn("allowlist外", first["reason"])
 
             second = df[df["event_id"] == "E002"].iloc[0]
             self.assertEqual(second["observability_status"], "none")
             self.assertEqual(second["risk"], "Low")
+            self.assertEqual(second["risk_category"], "通信なし")
             self.assertIn("5秒以内", second["reason"])
 
     @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
