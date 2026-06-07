@@ -1,7 +1,7 @@
-event_id,ui_timestamp,screen,action,element_text,traffic_timestamp,time_delta,observability_status,domain,scheme,method,url,status_code,risk,reason
-E001,1780631919,Home,tap,Get Ticket,,,none,,,,,,Low,操作後5秒以内に通信は観測されませんでした。
-E002,1780631925,Home,tap,TopTab_1,,,none,,,,,,Low,操作後5秒以内に通信は観測されませんでした。
-E003,1780631930,Home,tap,TopTab_2,,,none,,,,,,Low,操作後5秒以内に通信は観測されませんでした。
-E004,1780631935,Home,tap,TopTab_3,,,none,,,,,,Low,操作後5秒以内に通信は観測されませんでした。
-E005,1780631940,Home,tap,TopTab_4,,,none,,,,,,Low,操作後5秒以内に通信は観測されませんでした。
-E006,1780631946,Home,tap,TopTab_5,,,none,,,,,,Low,操作後5秒以内に通信は観測されませんでした。
+event_id,ui_timestamp,screen,action,element_text,traffic_timestamp,time_delta,observability_status,domain,scheme,method,url,status_code,risk,risk_category,reason
+E001,1780631919,Home,tap,Get Ticket,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
+E002,1780631925,Home,tap,TopTab_1,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
+E003,1780631930,Home,tap,TopTab_2,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
+E004,1780631935,Home,tap,TopTab_3,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
+E005,1780631940,Home,tap,TopTab_4,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
+E006,1780631946,Home,tap,TopTab_5,,,none,,,,,,Low,通信なし,操作後5秒以内に通信は観測されませんでした。
