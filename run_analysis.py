@@ -13,7 +13,11 @@ from typing import List, Optional, Union
 
 TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_TRAFFIC_LOG_PATH = PROJECT_ROOT / "logs" / "traffic_logs.csv"
+DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
+DEFAULT_UI_LOG_PATH = DEFAULT_LOG_DIR / "ui_events.csv"
+DEFAULT_TRAFFIC_LOG_PATH = DEFAULT_LOG_DIR / "traffic_logs.csv"
+DEFAULT_RISK_RESULTS_PATH = DEFAULT_LOG_DIR / "risk_results.csv"
+DEFAULT_MITMDUMP_LOG_PATH = DEFAULT_LOG_DIR / "mitmdump.log"
 CAPTURE_SCRIPT_PATH = PROJECT_ROOT / "capture_traffic.py"
 AUTO_RUNNER_PATH = PROJECT_ROOT / "auto_runner.py"
 
@@ -78,7 +82,22 @@ def initialize_traffic_log(filepath: str, reset: bool = False) -> None:
             os.fsync(f.fileno())
 
 
-def start_mitmproxy(listen_port: int, traffic_path: Optional[Union[os.PathLike, str]] = None) -> Optional[subprocess.Popen]:
+def _tail_text(path: Union[os.PathLike, str], max_lines: int = 30) -> str:
+    """Return the last lines of a text log for concise startup diagnostics."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return ""
+    return "".join(lines[-max_lines:]).strip()
+
+
+def start_mitmproxy(
+    listen_port: int,
+    traffic_path: Optional[Union[os.PathLike, str]] = None,
+    mitmdump_log_path: Optional[Union[os.PathLike, str]] = None,
+    startup_wait_seconds: float = 3.0,
+) -> Optional[subprocess.Popen]:
     mitmdump = shutil.which("mitmdump")
     if not mitmdump:
         print("[WARN] mitmdump was not found. UI automation will run, but traffic_logs.csv will not be captured.")
@@ -86,16 +105,23 @@ def start_mitmproxy(listen_port: int, traffic_path: Optional[Union[os.PathLike, 
 
     traffic_path = Path(traffic_path) if traffic_path is not None else DEFAULT_TRAFFIC_LOG_PATH
     traffic_path = traffic_path.resolve()
+    if mitmdump_log_path is None and traffic_path != DEFAULT_TRAFFIC_LOG_PATH.resolve():
+        mitmdump_log_path = traffic_path.parent / "mitmdump.log"
+    mitmdump_log_path = Path(mitmdump_log_path) if mitmdump_log_path is not None else DEFAULT_MITMDUMP_LOG_PATH
+    mitmdump_log_path = mitmdump_log_path.resolve()
     script_path = CAPTURE_SCRIPT_PATH.resolve()
     if not script_path.exists():
         print(f"[WARN] mitmproxy capture script was not found at {script_path}; traffic capture may be unavailable.")
         return None
     initialize_traffic_log(str(traffic_path), reset=True)
+    mitmdump_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     command = [
         mitmdump,
         "-s",
         str(script_path),
+        "--listen-host",
+        "0.0.0.0",
         "--listen-port",
         str(listen_port),
         "--set",
@@ -104,14 +130,21 @@ def start_mitmproxy(listen_port: int, traffic_path: Optional[Union[os.PathLike, 
     env = os.environ.copy()
     env["TRAFFIC_LOG_PATH"] = str(traffic_path)
     print("[MITM] Starting: " + " ".join(command))
-    proc = subprocess.Popen(command, env=env)
-    time.sleep(3)
+    print(f"[MITM] Log: {mitmdump_log_path}")
+    with open(mitmdump_log_path, "w", encoding="utf-8") as mitm_log:
+        proc = subprocess.Popen(command, env=env, stdout=mitm_log, stderr=subprocess.STDOUT)
+    time.sleep(startup_wait_seconds)
     if proc.poll() is not None:
+        details = _tail_text(mitmdump_log_path)
         print(
             f"[WARN] mitmdump exited early with status {proc.returncode}; traffic capture may be unavailable. "
             f"If you already started mitmdump manually on port {listen_port}, stop it or run this program with --skip-capture. "
             "If you run from another directory, this program now resolves capture_traffic.py relative to run_analysis.py."
         )
+        if details:
+            print(f"[MITM] Last mitmdump log lines:\n{details}")
+        else:
+            print(f"[MITM] No mitmdump output was written to {mitmdump_log_path}.")
         return None
     return proc
 
@@ -242,6 +275,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=30, help="Maximum number of UI taps to perform.")
     parser.add_argument("--wait", type=int, default=5, help="Seconds to wait after app start and each tap.")
     parser.add_argument("--listen-port", type=int, default=8080, help="mitmproxy listen port.")
+    parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR), help="Directory for ui_events.csv, traffic_logs.csv, risk_results.csv, and mitmdump.log.")
     parser.add_argument("--window", type=float, default=5.0, help="Seconds after each UI event to correlate traffic.")
     parser.add_argument(
         "--allowed-domain",
@@ -281,11 +315,17 @@ def main() -> int:
         print(f"[ERROR] APK file not found: {args.apk}", file=sys.stderr)
         return 1
 
-    ui_log_path = DEFAULT_UI_LOG_PATH.resolve()
-    traffic_log_path = DEFAULT_TRAFFIC_LOG_PATH.resolve()
-    risk_results_path = DEFAULT_RISK_RESULTS_PATH.resolve()
+    log_paths = default_log_paths(args.log_dir)
+    ui_log_path = log_paths.ui
+    traffic_log_path = log_paths.traffic
+    risk_results_path = log_paths.results
+    mitmdump_log_path = Path(args.log_dir).resolve() / "mitmdump.log"
 
-    mitm_proc = None if args.skip_capture else start_mitmproxy(args.listen_port, traffic_path=traffic_log_path)
+    mitm_proc = None if args.skip_capture else start_mitmproxy(
+        args.listen_port,
+        traffic_path=traffic_log_path,
+        mitmdump_log_path=mitmdump_log_path,
+    )
     proxy_state = None
     try:
         if not args.skip_capture and not args.skip_proxy_setup and mitm_proc is not None:
@@ -296,7 +336,18 @@ def main() -> int:
                 use_adb_reverse=not args.no_adb_reverse,
             )
 
-        command = [sys.executable, str(AUTO_RUNNER_PATH), "--apk", args.apk, "--max-events", str(args.max_events), "--wait", str(args.wait)]
+        command = [
+            sys.executable,
+            str(AUTO_RUNNER_PATH),
+            "--apk",
+            args.apk,
+            "--max-events",
+            str(args.max_events),
+            "--wait",
+            str(args.wait),
+            "--log",
+            str(ui_log_path),
+        ]
         if args.package:
             command.extend(["--package", args.package])
         if args.serial:
@@ -307,7 +358,7 @@ def main() -> int:
         stop_process(mitm_proc)
 
     if not args.skip_capture:
-        warn_if_no_traffic_records(DEFAULT_TRAFFIC_LOG_PATH)
+        warn_if_no_traffic_records(traffic_log_path)
 
     from analyze_logs import analyze
 
