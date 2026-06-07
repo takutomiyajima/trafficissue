@@ -159,7 +159,6 @@ def analyze(
     ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
     traffic_df["timestamp"] = pd.to_numeric(traffic_df["timestamp"], errors="coerce")
     traffic_df = traffic_df.dropna(subset=["timestamp"]).copy()
-    traffic_df = _ensure_columns(traffic_df, TRAFFIC_COLUMNS)
     traffic_df = traffic_df.drop_duplicates(subset=TRAFFIC_COLUMNS)
 
     if not include_system_probes and not traffic_df.empty:
