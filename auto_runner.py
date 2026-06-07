@@ -193,9 +193,8 @@ def auto_explore(
 
     visited: Set[str] = set()
     event_counter = 1
-    idle_rounds = 0
 
-    while event_counter <= max_events and idle_rounds < 3:
+    while event_counter <= max_events:
         current_screen = screen_name(d, package_name)
         try:
             xml = d.dump_hierarchy(compressed=False)
@@ -213,13 +212,9 @@ def auto_explore(
                 break
 
         if not next_node:
-            idle_rounds += 1
-            print(f"[UI] No new clickable elements on {current_screen}; pressing back ({idle_rounds}/3).")
-            d.press("back")
-            time.sleep(1)
-            continue
+            print(f"[UI] No new clickable elements remain on {current_screen}; finishing automation.")
+            break
 
-        idle_rounds = 0
         center = center_of(next_node["bounds"])
         if not center:
             continue
