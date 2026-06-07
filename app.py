@@ -17,6 +17,8 @@ st.sidebar.markdown(
 uploaded_apk = st.sidebar.file_uploader("解析するAPKファイル", type=["apk"])
 max_events = st.sidebar.number_input("最大タップ数", min_value=1, max_value=200, value=30, step=1)
 wait_seconds = st.sidebar.number_input("各操作後の待機秒数", min_value=1, max_value=60, value=5, step=1)
+window_seconds = st.sidebar.number_input("UI操作と通信を紐付ける秒数", min_value=1.0, max_value=60.0, value=5.0, step=0.5)
+allowed_domains_text = st.sidebar.text_area("First-party / allowlistドメイン（1行1件）", "example.com\napi.example.com", height=90)
 skip_capture = st.sidebar.checkbox("mitmproxyを起動せず既存の通信ログを使う", value=False)
 
 if uploaded_apk is not None:
@@ -35,7 +37,11 @@ if uploaded_apk is not None:
             str(max_events),
             "--wait",
             str(wait_seconds),
+            "--window",
+            str(window_seconds),
         ]
+        for domain in [line.strip() for line in allowed_domains_text.splitlines() if line.strip()]:
+            command.extend(["--allowed-domain", domain])
         if skip_capture:
             command.append("--skip-capture")
 
@@ -61,8 +67,13 @@ if os.path.exists(result_file):
     # 統計サマリー
     col1, col2, col3 = st.columns(3)
     col1.metric("トリガーされたUI操作数", len(df['event_id'].unique()))
-    col2.metric("⚠️ High リスク (HTTP等)", len(df[df['risk'] == 'High']))
-    col3.metric("🔔 Middle リスク (外部送信等)", len(df[df['risk'] == 'Middle']))
+    col2.metric("⚠️ High リスク (HTTP/Tracker/位置情報等)", len(df[df['risk'] == 'High']))
+    col3.metric("🔔 Middle リスク (allowlist外HTTPS等)", len(df[df['risk'] == 'Middle']))
+
+    if 'observability_status' in df.columns:
+        observed_count = len(df[df['observability_status'] == 'observed'])
+        none_count = len(df[df['observability_status'] == 'none'])
+        st.caption(f"観測された通信: {observed_count}件 / 操作後通信なし: {none_count}件")
     
     st.write("---")
     st.subheader("🔍 判定結果（タイムスタンプ突合）")
