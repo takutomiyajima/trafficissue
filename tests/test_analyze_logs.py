@@ -122,6 +122,55 @@ class AnalyzeLogsTest(unittest.TestCase):
             self.assertEqual(len(df_with_probes), 3)
             self.assertIn("connectivitycheck.gstatic.com", set(df_with_probes["domain"]))
 
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_handles_empty_traffic_log_as_no_observed_traffic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            output_path = base / "risk_results.csv"
+
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E001,100.0,Home,tap,No Traffic Test\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text("", encoding="utf-8")
+
+            df = analyze(str(ui_path), str(traffic_path), str(output_path), window_seconds=5)
+
+            self.assertEqual(len(df), 1)
+            first = df.iloc[0]
+            self.assertEqual(first["event_id"], "E001")
+            self.assertEqual(first["observability_status"], "none")
+            self.assertEqual(first["risk"], "Low")
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_normalizes_log_headers_before_correlation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            output_path = base / "risk_results.csv"
+
+            ui_path.write_text(
+                " event_id , timestamp , screen , action , element_text \n"
+                "E001,100.0,Home,tap,Open Page\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text(
+                "\ufeff timestamp , scheme , domain , method , url , status_code \n"
+                "101,https,unknown-site.com,GET,https://unknown-site.com,200\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(str(ui_path), str(traffic_path), str(output_path), window_seconds=5)
+
+            first = df.iloc[0]
+            self.assertEqual(first["event_id"], "E001")
+            self.assertEqual(first["domain"], "unknown-site.com")
+            self.assertEqual(first["observability_status"], "observed")
+
 
 if __name__ == "__main__":
     unittest.main()

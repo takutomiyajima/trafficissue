@@ -6,6 +6,25 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
 
 
+RESULT_COLUMNS = [
+    "event_id",
+    "ui_timestamp",
+    "screen",
+    "action",
+    "element_text",
+    "traffic_timestamp",
+    "time_delta",
+    "observability_status",
+    "domain",
+    "scheme",
+    "method",
+    "url",
+    "status_code",
+    "risk",
+    "reason",
+]
+
+
 DEFAULT_UI_PATH = "logs/ui_events.csv"
 DEFAULT_TRAFFIC_PATH = "logs/traffic_logs.csv"
 DEFAULT_OUTPUT_PATH = "logs/risk_results.csv"
@@ -129,11 +148,32 @@ def classify_risk(
     )
 
 
+def _read_log_csv(path: str, columns: Sequence[str]):
+    """Read a tool-generated CSV log and return a dataframe with stable columns.
+
+    mitmproxy can be interrupted before it writes the traffic header, and some CSV
+    tools add whitespace or a UTF-8 BOM to column names.  Normalize those cases so
+    later timestamp correlation never raises a KeyError for a missing expected
+    column.
+    """
+    import pandas as pd
+    from pandas.errors import EmptyDataError
+
+    try:
+        df = pd.read_csv(path)
+    except EmptyDataError:
+        df = pd.DataFrame(columns=columns)
+
+    df = df.copy()
+    df.columns = [_clean(column).lstrip("\ufeff") for column in df.columns]
+    return _ensure_columns(df, columns)
+
+
 def _ensure_columns(df, columns: Sequence[str]):
     for column in columns:
         if column not in df.columns:
             df[column] = ""
-    return df
+    return df.reindex(columns=list(columns) + [column for column in df.columns if column not in columns])
 
 
 def analyze(
@@ -151,10 +191,8 @@ def analyze(
     if not os.path.exists(ui_path) or not os.path.exists(traffic_path):
         raise FileNotFoundError("Logs not found. Please run capture and runner first.")
 
-    ui_df = pd.read_csv(ui_path)
-    traffic_df = pd.read_csv(traffic_path)
-    ui_df = _ensure_columns(ui_df, ["event_id", "timestamp", "screen", "action", "element_text"])
-    traffic_df = _ensure_columns(traffic_df, ["timestamp", "scheme", "domain", "method", "url", "status_code"])
+    ui_df = _read_log_csv(ui_path, ["event_id", "timestamp", "screen", "action", "element_text"])
+    traffic_df = _read_log_csv(traffic_path, ["timestamp", "scheme", "domain", "method", "url", "status_code"])
 
     ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
     traffic_df["timestamp"] = pd.to_numeric(traffic_df["timestamp"], errors="coerce")
@@ -236,7 +274,7 @@ def analyze(
                 }
             )
 
-    res_df = pd.DataFrame(results)
+    res_df = pd.DataFrame(results, columns=RESULT_COLUMNS)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     res_df.to_csv(output_path, index=False)
     print(f"[Analyzer] Analysis complete. Saved to {output_path}")

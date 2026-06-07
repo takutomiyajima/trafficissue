@@ -8,22 +8,26 @@ DEFAULT_TRAFFIC_LOG_PATH = "logs/traffic_logs.csv"
 TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code"]
 
 
+def initialize_traffic_log(filepath: str = DEFAULT_TRAFFIC_LOG_PATH, reset: bool = False) -> None:
+    log_dir = os.path.dirname(filepath)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    if reset or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(TRAFFIC_LOG_COLUMNS)
+            f.flush()
+            os.fsync(f.fileno())
+
+
 class TrafficLogger:
     def __init__(self, filepath: str = DEFAULT_TRAFFIC_LOG_PATH):
         self.filepath = filepath
         self._ensure_log_file(reset=True)
 
     def _ensure_log_file(self, reset: bool = False) -> None:
-        log_dir = os.path.dirname(self.filepath)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-        if reset or not os.path.exists(self.filepath) or os.path.getsize(self.filepath) == 0:
-            with open(self.filepath, "w", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow(TRAFFIC_LOG_COLUMNS)
-                f.flush()
-                os.fsync(f.fileno())
+        initialize_traffic_log(self.filepath, reset=reset)
 
-    def response(self, flow: http.HTTPFlow):
+    def _write_flow(self, flow: http.HTTPFlow, status_code: int = 0) -> None:
         timestamp = int(datetime.datetime.now().timestamp())
         row = [
             timestamp,
@@ -31,7 +35,7 @@ class TrafficLogger:
             flow.request.host,
             flow.request.method,
             flow.request.url,
-            flow.response.status_code if flow.response else 0,
+            status_code,
         ]
 
         self._ensure_log_file()
@@ -39,6 +43,12 @@ class TrafficLogger:
             csv.writer(f).writerow(row)
             f.flush()
             os.fsync(f.fileno())
+
+    def response(self, flow: http.HTTPFlow):
+        self._write_flow(flow, flow.response.status_code if flow.response else 0)
+
+    def error(self, flow: http.HTTPFlow):
+        self._write_flow(flow, 0)
 
 
 addons = [TrafficLogger(os.environ.get("TRAFFIC_LOG_PATH", DEFAULT_TRAFFIC_LOG_PATH))]
