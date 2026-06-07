@@ -164,20 +164,36 @@ def signature(node: Dict[str, str], screen: str) -> str:
     return "|".join(stable_parts)
 
 
-def log_event(filepath: str, event_counter: int, screen: str, node: Dict[str, str]) -> int:
+def write_ui_event(
+    filepath: str,
+    event_id: str,
+    screen: str,
+    action: str,
+    element_text: str = "",
+    resource_id: str = "",
+    bounds: str = "",
+) -> int:
     timestamp = int(datetime.datetime.now().timestamp())
     with open(filepath, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            f"E{event_counter:03d}",
-            timestamp,
-            screen,
-            "tap",
-            node.get("label", ""),
-            node.get("resource_id", ""),
-            node.get("bounds", ""),
-        ])
+        writer.writerow([event_id, timestamp, screen, action, element_text, resource_id, bounds])
     return timestamp
+
+
+def log_event(filepath: str, event_counter: int, screen: str, node: Dict[str, str]) -> int:
+    return write_ui_event(
+        filepath,
+        f"E{event_counter:03d}",
+        screen,
+        "tap",
+        node.get("label", ""),
+        node.get("resource_id", ""),
+        node.get("bounds", ""),
+    )
+
+
+def log_launch_event(filepath: str, screen: str, package_name: str) -> int:
+    return write_ui_event(filepath, "E000", screen, "launch", package_name)
 
 
 def auto_explore(
@@ -189,6 +205,9 @@ def auto_explore(
 ) -> None:
     print(f"[UI] Starting app: {package_name}")
     d.app_start(package_name)
+    launch_screen = screen_name(d, package_name)
+    launch_timestamp = log_launch_event(filepath, launch_screen, package_name)
+    print(f"[UI] E000: launched {package_name} on {launch_screen} at {launch_timestamp}")
     time.sleep(wait_seconds)
 
     visited: Set[str] = set()
@@ -196,6 +215,15 @@ def auto_explore(
 
     while event_counter <= max_events:
         current_screen = screen_name(d, package_name)
+        current_package = current_screen.split("/", 1)[0] if "/" in current_screen else package_name
+        if current_package != package_name:
+            print(f"[UI] Skipping external package {current_package}; returning to {package_name}")
+            try:
+                d.press("back")
+                time.sleep(1)
+            except Exception:
+                pass
+            continue
         try:
             xml = d.dump_hierarchy(compressed=False)
             candidates = list(clickable_nodes(xml))
