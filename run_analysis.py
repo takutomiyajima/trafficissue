@@ -13,10 +13,7 @@ from typing import List, Optional, Union
 
 TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
-DEFAULT_UI_LOG_PATH = DEFAULT_LOG_DIR / "ui_events.csv"
-DEFAULT_TRAFFIC_LOG_PATH = DEFAULT_LOG_DIR / "traffic_logs.csv"
-DEFAULT_RISK_RESULTS_PATH = DEFAULT_LOG_DIR / "risk_results.csv"
+DEFAULT_TRAFFIC_LOG_PATH = PROJECT_ROOT / "logs" / "traffic_logs.csv"
 CAPTURE_SCRIPT_PATH = PROJECT_ROOT / "capture_traffic.py"
 AUTO_RUNNER_PATH = PROJECT_ROOT / "auto_runner.py"
 
@@ -284,9 +281,11 @@ def main() -> int:
         print(f"[ERROR] APK file not found: {args.apk}", file=sys.stderr)
         return 1
 
-    log_paths = default_log_paths()
+    ui_log_path = DEFAULT_UI_LOG_PATH.resolve()
+    traffic_log_path = DEFAULT_TRAFFIC_LOG_PATH.resolve()
+    risk_results_path = DEFAULT_RISK_RESULTS_PATH.resolve()
 
-    mitm_proc = None if args.skip_capture else start_mitmproxy(args.listen_port, traffic_path=log_paths.traffic)
+    mitm_proc = None if args.skip_capture else start_mitmproxy(args.listen_port, traffic_path=traffic_log_path)
     proxy_state = None
     try:
         if not args.skip_capture and not args.skip_proxy_setup and mitm_proc is not None:
@@ -297,18 +296,7 @@ def main() -> int:
                 use_adb_reverse=not args.no_adb_reverse,
             )
 
-        command = [
-            sys.executable,
-            str(AUTO_RUNNER_PATH),
-            "--apk",
-            args.apk,
-            "--max-events",
-            str(args.max_events),
-            "--wait",
-            str(args.wait),
-            "--log",
-            str(log_paths.ui),
-        ]
+        command = [sys.executable, str(AUTO_RUNNER_PATH), "--apk", args.apk, "--max-events", str(args.max_events), "--wait", str(args.wait)]
         if args.package:
             command.extend(["--package", args.package])
         if args.serial:
@@ -319,19 +307,19 @@ def main() -> int:
         stop_process(mitm_proc)
 
     if not args.skip_capture:
-        warn_if_no_traffic_records(log_paths.traffic)
+        warn_if_no_traffic_records(DEFAULT_TRAFFIC_LOG_PATH)
 
     from analyze_logs import analyze
 
     analyze(
-        ui_path=str(log_paths.ui),
-        traffic_path=str(log_paths.traffic),
-        output_path=str(log_paths.results),
+        ui_path=str(ui_log_path),
+        traffic_path=str(traffic_log_path),
+        output_path=str(risk_results_path),
         window_seconds=args.window,
         allowed_domains=args.allowed_domains,
         include_system_probes=args.include_system_probes,
     )
-    print(f"[DONE] Results are available in {log_paths.results}")
+    print(f"[DONE] Results are available in {risk_results_path}")
     return 0
 
 
