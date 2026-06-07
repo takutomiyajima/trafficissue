@@ -64,7 +64,7 @@ class RunAnalysisProxyTest(unittest.TestCase):
                 traffic_path = Path(tmp) / "logs" / "traffic_logs.csv"
                 self.assertEqual(
                     traffic_path.read_text(encoding="utf-8"),
-                    "timestamp,scheme,domain,method,url,status_code\n",
+                    "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
                 )
                 command = mock_popen.call_args.args[0]
                 self.assertIn(str(Path(tmp) / "capture_traffic.py"), command)
@@ -76,7 +76,7 @@ class RunAnalysisProxyTest(unittest.TestCase):
     def test_warn_if_no_traffic_records_reports_header_only_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             traffic_path = Path(tmp) / "traffic_logs.csv"
-            traffic_path.write_text("timestamp,scheme,domain,method,url,status_code\n", encoding="utf-8")
+            traffic_path.write_text("timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n", encoding="utf-8")
 
             output = io.StringIO()
             with redirect_stdout(output):
