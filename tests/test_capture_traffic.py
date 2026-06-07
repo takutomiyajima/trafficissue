@@ -38,6 +38,12 @@ class CaptureTrafficTest(unittest.TestCase):
 
                 self.assertIn("status_code", csv_path.read_text(encoding="utf-8"))
                 self.assertIn(",200\n", csv_path.read_text(encoding="utf-8"))
+
+                error_csv_path = Path(tmp) / "traffic_error_logs.csv"
+                error_logger = capture_traffic.TrafficLogger(str(error_csv_path))
+                error_logger.error(flow)
+
+                self.assertIn(",0\n", error_csv_path.read_text(encoding="utf-8"))
         finally:
             if original_mitmproxy is None:
                 sys.modules.pop("mitmproxy", None)

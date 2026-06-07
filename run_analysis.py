@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import shutil
 import socket
@@ -7,6 +8,9 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import List, Optional
+
+
+TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code"]
 
 
 @dataclass(frozen=True)
@@ -38,22 +42,60 @@ def adb_shell(command: List[str], serial: Optional[str] = None, check: bool = Tr
     return adb(["shell", *command], serial=serial, check=check)
 
 
+def initialize_traffic_log(filepath: str, reset: bool = False) -> None:
+    log_dir = os.path.dirname(filepath)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    if reset or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(TRAFFIC_LOG_COLUMNS)
+            f.flush()
+            os.fsync(f.fileno())
+
+
 def start_mitmproxy(listen_port: int) -> Optional[subprocess.Popen]:
     mitmdump = shutil.which("mitmdump")
     if not mitmdump:
         print("[WARN] mitmdump was not found. UI automation will run, but traffic_logs.csv will not be captured.")
         return None
-    os.makedirs("logs", exist_ok=True)
-    traffic_path = "logs/traffic_logs.csv"
-    if os.path.exists(traffic_path):
-        os.remove(traffic_path)
-    command = [mitmdump, "-s", "capture_traffic.py", "--listen-port", str(listen_port)]
+
+    traffic_path = os.path.abspath("logs/traffic_logs.csv")
+    script_path = os.path.abspath("capture_traffic.py")
+    initialize_traffic_log(traffic_path, reset=True)
+
+    command = [
+        mitmdump,
+        "-s",
+        script_path,
+        "--listen-port",
+        str(listen_port),
+        "--set",
+        "block_global=false",
+    ]
     env = os.environ.copy()
     env["TRAFFIC_LOG_PATH"] = traffic_path
     print("[MITM] Starting: " + " ".join(command))
     proc = subprocess.Popen(command, env=env)
     time.sleep(3)
+    if proc.poll() is not None:
+        print(f"[WARN] mitmdump exited early with status {proc.returncode}; traffic capture may be unavailable.")
     return proc
+
+
+def warn_if_no_traffic_records(traffic_path: str = "logs/traffic_logs.csv") -> None:
+    if not os.path.exists(traffic_path):
+        print(f"[WARN] {traffic_path} was not created; mitmproxy did not start or could not load the capture script.")
+        return
+
+    with open(traffic_path, encoding="utf-8") as f:
+        non_empty_lines = [line for line in f if line.strip()]
+
+    if len(non_empty_lines) <= 1:
+        print(
+            f"[WARN] {traffic_path} contains only the header and no captured requests. "
+            "Check that the app uses the configured Android HTTP proxy, the mitmproxy CA is trusted for HTTPS, "
+            "and the tested actions actually perform network requests."
+        )
 
 
 def stop_process(proc: Optional[subprocess.Popen]) -> None:
@@ -209,6 +251,9 @@ def main() -> int:
     finally:
         restore_device_proxy(proxy_state, serial=args.serial)
         stop_process(mitm_proc)
+
+    if not args.skip_capture:
+        warn_if_no_traffic_records()
 
     from analyze_logs import analyze
 

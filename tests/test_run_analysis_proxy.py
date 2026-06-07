@@ -1,4 +1,9 @@
+import io
+import os
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 import run_analysis
@@ -36,6 +41,48 @@ class RunAnalysisProxyTest(unittest.TestCase):
         mock_adb_shell.assert_any_call(["settings", "delete", "global", "global_http_proxy_host"], serial="device-1", check=False)
         mock_adb_shell.assert_any_call(["settings", "delete", "global", "global_http_proxy_port"], serial="device-1", check=False)
         mock_adb.assert_called_once_with(["reverse", "--remove", "tcp:8080"], serial="device-1", check=False)
+
+    @patch("run_analysis.time.sleep")
+    @patch("run_analysis.subprocess.Popen")
+    @patch("run_analysis.shutil.which", return_value="/usr/local/bin/mitmdump")
+    def test_start_mitmproxy_uses_absolute_paths_and_initializes_log(self, mock_which, mock_popen, mock_sleep):
+        class FakeProcess:
+            returncode = None
+
+            def poll(self):
+                return None
+
+        mock_popen.return_value = FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                proc = run_analysis.start_mitmproxy(8080)
+
+                self.assertIs(proc, mock_popen.return_value)
+                traffic_path = Path(tmp) / "logs" / "traffic_logs.csv"
+                self.assertEqual(
+                    traffic_path.read_text(encoding="utf-8"),
+                    "timestamp,scheme,domain,method,url,status_code\n",
+                )
+                command = mock_popen.call_args.args[0]
+                self.assertIn(str(Path(tmp) / "capture_traffic.py"), command)
+                self.assertIn("block_global=false", command)
+                self.assertEqual(mock_popen.call_args.kwargs["env"]["TRAFFIC_LOG_PATH"], str(traffic_path))
+            finally:
+                os.chdir(previous_cwd)
+
+    def test_warn_if_no_traffic_records_reports_header_only_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            traffic_path = Path(tmp) / "traffic_logs.csv"
+            traffic_path.write_text("timestamp,scheme,domain,method,url,status_code\n", encoding="utf-8")
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                run_analysis.warn_if_no_traffic_records(str(traffic_path))
+
+            self.assertIn("contains only the header", output.getvalue())
 
 
 if __name__ == "__main__":
