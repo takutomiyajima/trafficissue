@@ -5,7 +5,7 @@ from mitmproxy import http
 
 
 DEFAULT_TRAFFIC_LOG_PATH = "logs/traffic_logs.csv"
-TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code"]
+TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
 
 
 def initialize_traffic_log(filepath: str = DEFAULT_TRAFFIC_LOG_PATH, reset: bool = False) -> None:
@@ -29,6 +29,8 @@ class TrafficLogger:
 
     def _write_flow(self, flow: http.HTTPFlow, status_code: int = 0) -> None:
         timestamp = int(datetime.datetime.now().timestamp())
+        request_body = flow.request.raw_content or b""
+        response_body = flow.response.raw_content if flow.response and flow.response.raw_content else b""
         row = [
             timestamp,
             flow.request.scheme,
@@ -36,6 +38,9 @@ class TrafficLogger:
             flow.request.method,
             flow.request.url,
             status_code,
+            flow.request.headers.get("content-type", ""),
+            len(request_body),
+            len(response_body),
         ]
 
         self._ensure_log_file()
