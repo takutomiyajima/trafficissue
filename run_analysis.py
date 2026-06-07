@@ -26,6 +26,24 @@ class ProxyState:
     reverse_configured: bool
 
 
+@dataclass(frozen=True)
+class LogPaths:
+    ui: Path
+    traffic: Path
+    results: Path
+
+
+def default_log_paths(log_dir: Optional[Union[os.PathLike, str]] = None) -> LogPaths:
+    """Return canonical repo-relative log paths used by capture, UI automation, and analysis."""
+    base = Path(log_dir) if log_dir is not None else DEFAULT_LOG_DIR
+    base = base.resolve()
+    return LogPaths(
+        ui=base / "ui_events.csv",
+        traffic=base / "traffic_logs.csv",
+        results=base / "risk_results.csv",
+    )
+
+
 
 
 def run(command: List[str], check: bool = True) -> subprocess.CompletedProcess:

@@ -10,6 +10,21 @@ import run_analysis
 
 
 class RunAnalysisProxyTest(unittest.TestCase):
+    def test_default_log_paths_are_derived_from_single_log_dir(self):
+        paths = run_analysis.default_log_paths()
+
+        self.assertEqual(paths.ui, run_analysis.DEFAULT_UI_LOG_PATH.resolve())
+        self.assertEqual(paths.traffic, run_analysis.DEFAULT_TRAFFIC_LOG_PATH.resolve())
+        self.assertEqual(paths.results, run_analysis.DEFAULT_RISK_RESULTS_PATH.resolve())
+
+    def test_default_log_paths_accepts_custom_log_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = run_analysis.default_log_paths(tmp)
+
+        self.assertEqual(paths.ui.name, "ui_events.csv")
+        self.assertEqual(paths.traffic.name, "traffic_logs.csv")
+        self.assertEqual(paths.results.name, "risk_results.csv")
+
     @patch("run_analysis.adb_shell")
     @patch("run_analysis.adb")
     def test_setup_proxy_prefers_adb_reverse_and_preserves_previous_proxy(self, mock_adb, mock_adb_shell):
