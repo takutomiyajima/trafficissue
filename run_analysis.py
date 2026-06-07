@@ -13,10 +13,7 @@ from typing import List, Optional, Union
 
 TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
-DEFAULT_UI_LOG_PATH = DEFAULT_LOG_DIR / "ui_events.csv"
-DEFAULT_TRAFFIC_LOG_PATH = DEFAULT_LOG_DIR / "traffic_logs.csv"
-DEFAULT_RISK_RESULTS_PATH = DEFAULT_LOG_DIR / "risk_results.csv"
+DEFAULT_TRAFFIC_LOG_PATH = PROJECT_ROOT / "logs" / "traffic_logs.csv"
 CAPTURE_SCRIPT_PATH = PROJECT_ROOT / "capture_traffic.py"
 AUTO_RUNNER_PATH = PROJECT_ROOT / "auto_runner.py"
 
@@ -281,18 +278,7 @@ def main() -> int:
                 use_adb_reverse=not args.no_adb_reverse,
             )
 
-        command = [
-            sys.executable,
-            str(AUTO_RUNNER_PATH),
-            "--apk",
-            args.apk,
-            "--max-events",
-            str(args.max_events),
-            "--wait",
-            str(args.wait),
-            "--log",
-            str(ui_log_path),
-        ]
+        command = [sys.executable, str(AUTO_RUNNER_PATH), "--apk", args.apk, "--max-events", str(args.max_events), "--wait", str(args.wait)]
         if args.package:
             command.extend(["--package", args.package])
         if args.serial:
@@ -303,7 +289,7 @@ def main() -> int:
         stop_process(mitm_proc)
 
     if not args.skip_capture:
-        warn_if_no_traffic_records(traffic_log_path)
+        warn_if_no_traffic_records(DEFAULT_TRAFFIC_LOG_PATH)
 
     from analyze_logs import analyze
 
