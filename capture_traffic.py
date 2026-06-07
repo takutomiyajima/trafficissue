@@ -1,10 +1,12 @@
 import csv
 import datetime
 import os
+from pathlib import Path
 from mitmproxy import http
 
 
-DEFAULT_TRAFFIC_LOG_PATH = "logs/traffic_logs.csv"
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_TRAFFIC_LOG_PATH = str(PROJECT_ROOT / "logs" / "traffic_logs.csv")
 TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
 
 

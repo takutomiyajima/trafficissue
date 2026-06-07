@@ -22,6 +22,11 @@ class CaptureTrafficTest(unittest.TestCase):
 
             capture_traffic = importlib.reload(capture_traffic)
             with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(
+                    Path(capture_traffic.DEFAULT_TRAFFIC_LOG_PATH),
+                    Path(capture_traffic.__file__).resolve().parent / "logs" / "traffic_logs.csv",
+                )
+
                 csv_path = Path(tmp) / "traffic_logs.csv"
                 logger = capture_traffic.TrafficLogger(str(csv_path))
                 flow = types.SimpleNamespace(

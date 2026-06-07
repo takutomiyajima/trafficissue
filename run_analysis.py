@@ -263,7 +263,11 @@ def main() -> int:
         print(f"[ERROR] APK file not found: {args.apk}", file=sys.stderr)
         return 1
 
-    mitm_proc = None if args.skip_capture else start_mitmproxy(args.listen_port)
+    ui_log_path = DEFAULT_UI_LOG_PATH.resolve()
+    traffic_log_path = DEFAULT_TRAFFIC_LOG_PATH.resolve()
+    risk_results_path = DEFAULT_RISK_RESULTS_PATH.resolve()
+
+    mitm_proc = None if args.skip_capture else start_mitmproxy(args.listen_port, traffic_path=traffic_log_path)
     proxy_state = None
     try:
         if not args.skip_capture and not args.skip_proxy_setup and mitm_proc is not None:
@@ -290,11 +294,14 @@ def main() -> int:
     from analyze_logs import analyze
 
     analyze(
+        ui_path=str(ui_log_path),
+        traffic_path=str(traffic_log_path),
+        output_path=str(risk_results_path),
         window_seconds=args.window,
         allowed_domains=args.allowed_domains,
         include_system_probes=args.include_system_probes,
     )
-    print("[DONE] Results are available in logs/risk_results.csv")
+    print(f"[DONE] Results are available in {risk_results_path}")
     return 0
 
 
