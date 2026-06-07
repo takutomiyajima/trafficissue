@@ -91,6 +91,9 @@ METADATA_COLUMNS = [
     "source",
 ]
 
+METADATA_ONLY_CATEGORY = "通信メタデータのみ"
+METADATA_ONLY_REASON = "VPN/pcap由来の通信メタデータは観測されましたが、HTTP本文は読めません。"
+
 
 def _clean(value: object) -> str:
     """Return a normalized string for CSV cells that may be NaN/None."""
@@ -215,9 +218,13 @@ def _normalize_metadata_columns(df):
         "hostname": "destination_host",
         "sni": "destination_host",
         "dst_host": "destination_host",
+        "server_name": "destination_host",
+        "remote_host": "destination_host",
         "ip": "destination_ip",
         "dst_ip": "destination_ip",
         "remote_ip": "destination_ip",
+        "dest_ip": "destination_ip",
+        "destination_address": "destination_ip",
         "port": "destination_port",
         "dst_port": "destination_port",
         "remote_port": "destination_port",
@@ -225,6 +232,8 @@ def _normalize_metadata_columns(df):
         "sent_bytes": "bytes_sent",
         "rcvd_bytes": "bytes_received",
         "received_bytes": "bytes_received",
+        "recv_bytes": "bytes_received",
+        "download_bytes": "bytes_received",
     }
     rename_map = {}
     for column in df.columns:
@@ -243,6 +252,82 @@ def _empty_metadata_fields() -> dict:
         "protocol": "",
         "bytes_sent": "",
         "bytes_received": "",
+    }
+
+
+
+def metadata_decision_for_row(domain: str, destination_ip: str, allowed_domains: Sequence[str]) -> RuleResult:
+    """Classify VPN/pcap rows as observable metadata without pretending HTTP body was readable."""
+    if domain:
+        severity = "Low" if is_allowed_domain(domain, allowed_domains) else "Medium"
+        party = destination_party(domain, allowed_domains)
+        reason = f"{METADATA_ONLY_REASON} 通信先ドメインは{party}として扱います。"
+    elif destination_ip:
+        severity = "Unknown"
+        reason = f"{METADATA_ONLY_REASON} ドメイン名は取れず、宛先IPのみ観測されました。"
+    else:
+        severity = "Unknown"
+        reason = f"{METADATA_ONLY_REASON} 通信先が不完全なためリスク判定は保留します。"
+
+    return RuleResult(
+        rule_id="metadata_only",
+        severity=severity,
+        category=METADATA_ONLY_CATEGORY,
+        reason=reason,
+        signal="pcap_metadata",
+    )
+
+
+def build_result_for_metadata_row(
+    metadata_row,
+    allowed_domains: Sequence[str],
+    event_id: str,
+    ui_time: float | str = "",
+    app_package: str = "",
+    screen: str = "",
+    action: str = "",
+    element_text: str = "",
+) -> dict:
+    """Build a result row for VPN/pcap metadata correlated to a UI event."""
+    traffic_time = float(metadata_row["timestamp"])
+    delta = round(traffic_time - float(ui_time), 3) if _clean(ui_time) else ""
+    domain = _clean(metadata_row.get("destination_host")).lower().rstrip(".")
+    destination_ip = _clean(metadata_row.get("destination_ip"))
+    decision = metadata_decision_for_row(domain, destination_ip, allowed_domains)
+    return {
+        "event_id": event_id,
+        "app_package": app_package,
+        "ui_timestamp": ui_time,
+        "screen": screen,
+        "action": action,
+        "element_text": element_text,
+        "traffic_timestamp": traffic_time,
+        "time_delta": delta,
+        "observability_status": observability_status_for_decision(decision),
+        "metadata_source": _clean(metadata_row.get("source")) or "pcap",
+        "destination_ip": destination_ip,
+        "destination_port": _clean(metadata_row.get("destination_port")),
+        "protocol": _clean(metadata_row.get("protocol")),
+        "bytes_sent": _clean(metadata_row.get("bytes_sent")),
+        "bytes_received": _clean(metadata_row.get("bytes_received")),
+        "domain": domain,
+        "destination_party": destination_party(domain, allowed_domains),
+        "scheme": "",
+        "method": "",
+        "url": "",
+        "status_code": "",
+        "content_type": "",
+        "request_size": "",
+        "response_size": "",
+        "response_timestamp": "",
+        "duration_ms": "",
+        "error": "",
+        "risk": decision.severity,
+        "risk_category": decision.category,
+        "risk_rule": decision.rule_id,
+        "risk_signal": decision.signal,
+        "data_categories": ";".join(decision.data_categories),
+        "reason": decision.reason,
     }
 
 
@@ -355,6 +440,14 @@ def analyze(
     if ui_rows.empty:
         for row_index, traffic_row in traffic_df.sort_values("timestamp").iterrows():
             results.append(build_result_for_traffic_row(traffic_row, allowed_domains, event_id=f"T{row_index + 1:03d}"))
+        for row_index, metadata_row in metadata_df.sort_values("timestamp").iterrows():
+            results.append(
+                build_result_for_metadata_row(
+                    metadata_row,
+                    allowed_domains,
+                    event_id=f"M{row_index + 1:03d}",
+                )
+            )
 
     for _, ui_row in ui_rows.iterrows():
         ui_time = float(ui_row["timestamp"])
@@ -373,69 +466,21 @@ def analyze(
             & (metadata_df["timestamp"] <= ui_time + window_seconds)
         ].sort_values("timestamp")
 
-        if matched_traffic.empty and not matched_metadata.empty:
-            for _, metadata_row in matched_metadata.iterrows():
-                traffic_time = float(metadata_row["timestamp"])
-                delta = round(traffic_time - ui_time, 3)
-                domain = _clean(metadata_row.get("destination_host")).lower().rstrip(".")
-                decision = classify_risk(
-                    scheme="",
-                    domain=domain,
-                    ui_text=element_text,
-                    allowed_domains=allowed_domains,
-                    url="",
-                    time_delta=delta,
+        for _, metadata_row in matched_metadata.iterrows():
+            results.append(
+                build_result_for_metadata_row(
+                    metadata_row,
+                    allowed_domains,
                     event_id=event_id,
+                    ui_time=ui_time,
+                    app_package=app_package,
+                    screen=screen,
+                    action=action,
+                    element_text=element_text,
                 )
-                if decision.rule_id == "unreadable_traffic" and domain:
-                    severity = "Low" if is_allowed_domain(domain, allowed_domains) else "Medium"
-                    decision = RuleResult(
-                        rule_id="metadata_only",
-                        severity=severity,
-                        category="通信メタデータのみ",
-                        reason="VPN/pcap由来の通信メタデータは観測されましたが、HTTP本文は読めません。",
-                        signal="pcap_metadata",
-                    )
-                results.append(
-                    {
-                        "event_id": event_id,
-                        "app_package": app_package,
-                        "ui_timestamp": ui_time,
-                        "screen": screen,
-                        "action": action,
-                        "element_text": element_text,
-                        "traffic_timestamp": traffic_time,
-                        "time_delta": delta,
-                        "observability_status": observability_status_for_decision(decision),
-                        "metadata_source": _clean(metadata_row.get("source")) or "pcap",
-                        "destination_ip": _clean(metadata_row.get("destination_ip")),
-                        "destination_port": _clean(metadata_row.get("destination_port")),
-                        "protocol": _clean(metadata_row.get("protocol")),
-                        "bytes_sent": _clean(metadata_row.get("bytes_sent")),
-                        "bytes_received": _clean(metadata_row.get("bytes_received")),
-                        "domain": domain,
-                        "destination_party": destination_party(domain, allowed_domains),
-                        "scheme": "",
-                        "method": "",
-                        "url": "",
-                        "status_code": "",
-                        "content_type": "",
-                        "request_size": "",
-                        "response_size": "",
-                        "response_timestamp": "",
-                        "duration_ms": "",
-                        "error": "",
-                        "risk": decision.severity,
-                        "risk_category": decision.category,
-                        "risk_rule": decision.rule_id,
-                        "risk_signal": decision.signal,
-                        "data_categories": ";".join(decision.data_categories),
-                        "reason": decision.reason,
-                    }
-                )
-            continue
+            )
 
-        if matched_traffic.empty:
+        if matched_traffic.empty and matched_metadata.empty:
             results.append(
                 {
                     "event_id": event_id,
@@ -468,9 +513,9 @@ def analyze(
                     "risk": "Unknown",
                     "risk_category": "観測不能",
                     "risk_rule": "no_observed_traffic",
-                    "risk_signal": "no_mitm_request_in_window",
+                    "risk_signal": "no_observed_network_in_window",
                     "data_categories": "",
-                    "reason": f"操作後{window_seconds:g}秒以内にmitmproxyで読める通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。",
+                    "reason": f"操作後{window_seconds:g}秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。",
                 }
             )
             continue
