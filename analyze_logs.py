@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from typing import List, Optional, Sequence
+from urllib.parse import urlparse
 
 from risk_rules import (
     RuleResult,
@@ -77,6 +78,29 @@ def extract_app_package(screen: str) -> str:
     """Extract package-like prefix from screen values such as com.example/.MainActivity."""
     screen = _clean(screen)
     return screen.split("/", 1)[0] if "/" in screen else ""
+
+
+def _derive_scheme_domain(scheme: str, domain: str, url: str) -> tuple[str, str]:
+    """Fill missing scheme/domain from a parseable URL before applying risk rules."""
+    normalized_scheme = _clean(scheme).lower().rstrip(":/")
+    normalized_domain = _clean(domain).lower().rstrip(".")
+    normalized_url = _clean(url)
+
+    if normalized_url and (not normalized_scheme or not normalized_domain):
+        parsed = urlparse(normalized_url)
+        if not normalized_scheme and parsed.scheme:
+            normalized_scheme = parsed.scheme.lower()
+        if not normalized_domain and parsed.hostname:
+            normalized_domain = parsed.hostname.lower().rstrip(".")
+
+    return normalized_scheme, normalized_domain
+
+
+def observability_status_for_decision(decision: RuleResult) -> str:
+    """Return a status that separates readable traffic from traffic with missing metadata."""
+    if decision.rule_id == "unreadable_traffic":
+        return "unreadable"
+    return "observed"
 
 
 def is_system_connectivity_probe(scheme: str, domain: str, url: str, status_code: object = "") -> bool:
@@ -223,9 +247,12 @@ def analyze(
         for _, traffic_row in matched_traffic.iterrows():
             traffic_time = float(traffic_row["timestamp"])
             delta = round(traffic_time - ui_time, 3)
-            scheme = _clean(traffic_row.get("scheme"))
-            domain = _clean(traffic_row.get("domain"))
             url = _clean(traffic_row.get("url"))
+            scheme, domain = _derive_scheme_domain(
+                traffic_row.get("scheme"),
+                traffic_row.get("domain"),
+                url,
+            )
             decision = classify_risk(
                 scheme=scheme,
                 domain=domain,
@@ -246,7 +273,7 @@ def analyze(
                     "element_text": element_text,
                     "traffic_timestamp": traffic_time,
                     "time_delta": delta,
-                    "observability_status": "observed",
+                    "observability_status": observability_status_for_decision(decision),
                     "domain": domain,
                     "destination_party": destination_party(domain, allowed_domains),
                     "scheme": scheme,

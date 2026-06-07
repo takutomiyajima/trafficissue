@@ -42,12 +42,14 @@ def ensure_columns(df, defaults):
 
 def overall_risk_label(df):
     observed = df[df["observability_status"] == "observed"] if "observability_status" in df.columns else df
-    if observed.empty:
+    if not observed.empty:
+        if (observed["risk"] == "High").any():
+            return "High"
+        if (observed["risk"] == "Medium").any():
+            return "Medium"
         return "Low"
-    if (observed["risk"] == "High").any():
-        return "High"
-    if (observed["risk"] == "Medium").any():
-        return "Medium"
+    if "observability_status" in df.columns and (df["observability_status"] == "unreadable").any():
+        return "Unknown"
     return "Low"
 
 
@@ -120,8 +122,10 @@ if os.path.exists(result_file):
         },
     )
     observed_df = df[df["observability_status"] == "observed"].copy()
+    unreadable_df = df[df["observability_status"] == "unreadable"].copy()
 
     total_traffic = len(observed_df)
+    unreadable_count = len(unreadable_df)
     domain_count = observed_df["domain"].replace("", pd.NA).dropna().nunique()
     external_count = len(observed_df[observed_df["destination_party"] == "third-party"])
     tracker_count = len(observed_df[observed_df["risk_rule"] == "tracker_domain"])
@@ -129,13 +133,14 @@ if os.path.exists(result_file):
     sensitive_count = len(observed_df[observed_df["risk_rule"] == "sensitive_key"])
 
     st.subheader("📌 MVPサマリー")
-    cols = st.columns(6)
-    cols[0].metric("総通信数", total_traffic)
-    cols[1].metric("通信先ドメイン数", domain_count)
-    cols[2].metric("外部ドメイン通信", external_count)
-    cols[3].metric("広告・解析系通信", tracker_count)
-    cols[4].metric("HTTP平文通信", http_count)
-    cols[5].metric("個人情報らしいキー", sensitive_count)
+    cols = st.columns(7)
+    cols[0].metric("判定済み通信数", total_traffic)
+    cols[1].metric("判定不能通信", unreadable_count)
+    cols[2].metric("通信先ドメイン数", domain_count)
+    cols[3].metric("外部ドメイン通信", external_count)
+    cols[4].metric("広告・解析系通信", tracker_count)
+    cols[5].metric("HTTP平文通信", http_count)
+    cols[6].metric("個人情報らしいキー", sensitive_count)
     st.metric("総合リスク", overall_risk_label(df))
 
     summary_tab, timeline_tab, details_tab, raw_tab = st.tabs(["リスク内訳", "時系列", "詳細ログ", "生ログ"])
@@ -184,11 +189,14 @@ if os.path.exists(result_file):
                 return ["background-color: #f8d7da; color: #721c24; font-weight: bold;"] * len(row)
             if row["risk"] == "Medium":
                 return ["background-color: #fff3cd; color: #856404;"] * len(row)
+            if row["risk"] == "Unknown" or row.get("observability_status") == "unreadable":
+                return ["background-color: #e2e3e5; color: #383d41;"] * len(row)
             return ["background-color: #d4edda; color: #155724;"] * len(row)
 
         display_columns = [
             "event_id",
             "time_delta",
+            "observability_status",
             "risk",
             "risk_category",
             "risk_rule",

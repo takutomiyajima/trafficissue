@@ -27,7 +27,7 @@ SENSITIVE_VALUE_PATTERNS = (
     (re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE), "email"),
     (re.compile(r"(?:\+?\d[\d ._()-]{8,}\d)"), "phone"),
 )
-SEVERITY_ORDER = {"Low": 0, "Medium": 1, "High": 2}
+SEVERITY_ORDER = {"Unknown": -1, "Low": 0, "Medium": 1, "High": 2}
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ def evaluate_traffic_risk(
     startup_window_seconds: float = 3.0,
 ) -> RuleResult:
     """Return the highest-priority MVP rule hit for one traffic record."""
-    normalized_scheme = _clean(scheme).lower()
+    normalized_scheme = _clean(scheme).lower().rstrip(":/")
     normalized_domain = _clean(domain).lower()
     normalized_url = _clean(url)
     candidates: List[RuleResult] = []
@@ -199,10 +199,10 @@ def evaluate_traffic_risk(
 
     if not normalized_scheme or not normalized_domain:
         return RuleResult(
-            rule_id="insufficient_metadata",
-            severity="Low",
-            category="判定保留",
-            reason="通信方式または通信先ドメインを取得できませんでした。",
+            rule_id="unreadable_traffic",
+            severity="Unknown",
+            category="判定不能通信",
+            reason="通信は観測されましたが、通信方式または通信先ドメインを取得できなかったためリスク判定できません。",
             signal="missing_scheme_or_domain",
         )
 
