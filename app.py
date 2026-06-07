@@ -20,6 +20,9 @@ wait_seconds = st.sidebar.number_input("各操作後の待機秒数", min_value=
 window_seconds = st.sidebar.number_input("UI操作と通信を紐付ける秒数", min_value=1.0, max_value=60.0, value=5.0, step=0.5)
 allowed_domains_text = st.sidebar.text_area("First-party / allowlistドメイン（1行1件）", "example.com\napi.example.com", height=90)
 skip_capture = st.sidebar.checkbox("mitmproxyを起動せず既存の通信ログを使う", value=False)
+skip_proxy_setup = st.sidebar.checkbox("Androidのプロキシ設定を変更しない", value=False)
+proxy_host = st.sidebar.text_input("Android端末から見たmitmproxyホスト（空なら自動）", "")
+no_adb_reverse = st.sidebar.checkbox("adb reverseを使わずホストIPへ接続する", value=False)
 
 if uploaded_apk is not None:
     os.makedirs("uploads", exist_ok=True)
@@ -44,6 +47,12 @@ if uploaded_apk is not None:
             command.extend(["--allowed-domain", domain])
         if skip_capture:
             command.append("--skip-capture")
+        if skip_proxy_setup:
+            command.append("--skip-proxy-setup")
+        if proxy_host.strip():
+            command.extend(["--proxy-host", proxy_host.strip()])
+        if no_adb_reverse:
+            command.append("--no-adb-reverse")
 
         with st.spinner("APK解析を実行中です。接続済みAndroid端末/エミュレータを操作します..."):
             result = subprocess.run(command, text=True, capture_output=True)

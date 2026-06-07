@@ -1,16 +1,41 @@
 import argparse
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from typing import List, Optional
 
+
+@dataclass(frozen=True)
+class ProxyState:
+    host: str
+    port: int
+    previous_http_proxy: str
+    reverse_configured: bool
 
 
 def run(command: List[str], check: bool = True) -> subprocess.CompletedProcess:
     print("[RUN] " + " ".join(command))
     return subprocess.run(command, check=check)
+
+
+def run_capture(command: List[str], check: bool = True) -> subprocess.CompletedProcess:
+    print("[RUN] " + " ".join(command))
+    return subprocess.run(command, check=check, text=True, capture_output=True)
+
+
+def adb(command: List[str], serial: Optional[str] = None, check: bool = True) -> subprocess.CompletedProcess:
+    base = ["adb"]
+    if serial:
+        base.extend(["-s", serial])
+    return run_capture(base + command, check=check)
+
+
+def adb_shell(command: List[str], serial: Optional[str] = None, check: bool = True) -> subprocess.CompletedProcess:
+    return adb(["shell", *command], serial=serial, check=check)
 
 
 def start_mitmproxy(listen_port: int) -> Optional[subprocess.Popen]:
@@ -41,6 +66,77 @@ def stop_process(proc: Optional[subprocess.Popen]) -> None:
         proc.wait()
 
 
+def local_route_ip() -> str:
+    """Return the host IP address normally reachable by a connected device."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+
+
+def get_android_http_proxy(serial: Optional[str] = None) -> str:
+    proc = adb_shell(["settings", "get", "global", "http_proxy"], serial=serial, check=False)
+    if proc.returncode != 0:
+        return ""
+    value = proc.stdout.strip()
+    return "" if value in {"", "null"} else value
+
+
+def clear_android_http_proxy(serial: Optional[str] = None) -> None:
+    # `:0` is Android's supported sentinel for clearing the global HTTP proxy.
+    adb_shell(["settings", "put", "global", "http_proxy", ":0"], serial=serial, check=False)
+    adb_shell(["settings", "delete", "global", "global_http_proxy_host"], serial=serial, check=False)
+    adb_shell(["settings", "delete", "global", "global_http_proxy_port"], serial=serial, check=False)
+
+
+def set_android_http_proxy(host: str, port: int, serial: Optional[str] = None) -> None:
+    adb_shell(["settings", "put", "global", "http_proxy", f"{host}:{port}"], serial=serial)
+
+
+def setup_device_proxy(
+    listen_port: int,
+    serial: Optional[str] = None,
+    proxy_host: Optional[str] = None,
+    use_adb_reverse: bool = True,
+) -> ProxyState:
+    previous_proxy = get_android_http_proxy(serial)
+    reverse_configured = False
+
+    if proxy_host:
+        host = proxy_host
+    elif use_adb_reverse:
+        reverse = adb(["reverse", f"tcp:{listen_port}", f"tcp:{listen_port}"], serial=serial, check=False)
+        reverse_configured = reverse.returncode == 0
+        if reverse_configured:
+            host = "127.0.0.1"
+            print(f"[ADB] Configured reverse tcp:{listen_port} -> tcp:{listen_port}")
+        else:
+            host = local_route_ip()
+            output = (reverse.stdout + reverse.stderr).strip()
+            print(f"[WARN] adb reverse failed; falling back to host IP {host}. {output}")
+    else:
+        host = local_route_ip()
+
+    set_android_http_proxy(host, listen_port, serial=serial)
+    print(f"[ADB] Android global HTTP proxy set to {host}:{listen_port}")
+    if previous_proxy:
+        print(f"[ADB] Previous Android HTTP proxy was {previous_proxy}; it will be restored after analysis.")
+    return ProxyState(host=host, port=listen_port, previous_http_proxy=previous_proxy, reverse_configured=reverse_configured)
+
+
+def restore_device_proxy(state: Optional[ProxyState], serial: Optional[str] = None) -> None:
+    if not state:
+        return
+    if state.previous_http_proxy:
+        adb_shell(["settings", "put", "global", "http_proxy", state.previous_http_proxy], serial=serial, check=False)
+        print(f"[ADB] Restored Android global HTTP proxy to {state.previous_http_proxy}")
+    else:
+        clear_android_http_proxy(serial=serial)
+        print("[ADB] Cleared Android global HTTP proxy")
+    if state.reverse_configured:
+        adb(["reverse", "--remove", f"tcp:{state.port}"], serial=serial, check=False)
+        print(f"[ADB] Removed reverse tcp:{state.port}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the full APK analysis flow: traffic capture, APK install/start, UI auto exploration, and risk analysis."
@@ -59,6 +155,23 @@ def parse_args() -> argparse.Namespace:
         help="First-party/allowlisted domain. Can be specified multiple times.",
     )
     parser.add_argument("--skip-capture", action="store_true", help="Do not start mitmdump; use an existing traffic_logs.csv instead.")
+    parser.add_argument(
+        "--skip-proxy-setup",
+        action="store_true",
+        help="Do not change the Android global HTTP proxy. Use this only when the device is already routed through mitmproxy.",
+    )
+    parser.add_argument(
+        "--proxy-host",
+        help=(
+            "Host/IP that the Android device should use for mitmproxy. By default adb reverse is used and "
+            "the device proxy is set to 127.0.0.1:<listen-port>; if reverse fails, the host LAN IP is used."
+        ),
+    )
+    parser.add_argument(
+        "--no-adb-reverse",
+        action="store_true",
+        help="Do not create adb reverse for the mitmproxy port; use --proxy-host or the host LAN IP instead.",
+    )
     return parser.parse_args()
 
 
@@ -69,7 +182,16 @@ def main() -> int:
         return 1
 
     mitm_proc = None if args.skip_capture else start_mitmproxy(args.listen_port)
+    proxy_state = None
     try:
+        if not args.skip_capture and not args.skip_proxy_setup and mitm_proc is not None:
+            proxy_state = setup_device_proxy(
+                args.listen_port,
+                serial=args.serial,
+                proxy_host=args.proxy_host,
+                use_adb_reverse=not args.no_adb_reverse,
+            )
+
         command = [sys.executable, "auto_runner.py", "--apk", args.apk, "--max-events", str(args.max_events), "--wait", str(args.wait)]
         if args.package:
             command.extend(["--package", args.package])
@@ -77,6 +199,7 @@ def main() -> int:
             command.extend(["--serial", args.serial])
         run(command)
     finally:
+        restore_device_proxy(proxy_state, serial=args.serial)
         stop_process(mitm_proc)
 
     from analyze_logs import analyze
