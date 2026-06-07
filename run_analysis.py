@@ -48,8 +48,10 @@ def start_mitmproxy(listen_port: int) -> Optional[subprocess.Popen]:
     if os.path.exists(traffic_path):
         os.remove(traffic_path)
     command = [mitmdump, "-s", "capture_traffic.py", "--listen-port", str(listen_port)]
+    env = os.environ.copy()
+    env["TRAFFIC_LOG_PATH"] = traffic_path
     print("[MITM] Starting: " + " ".join(command))
-    proc = subprocess.Popen(command)
+    proc = subprocess.Popen(command, env=env)
     time.sleep(3)
     return proc
 
@@ -58,6 +60,7 @@ def stop_process(proc: Optional[subprocess.Popen]) -> None:
     if not proc:
         return
     print("[MITM] Stopping mitmdump")
+    time.sleep(1)
     proc.terminate()
     try:
         proc.wait(timeout=10)
