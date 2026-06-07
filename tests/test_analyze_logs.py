@@ -30,6 +30,7 @@ class AnalyzeLogsTest(unittest.TestCase):
         plain_http = classify_risk("http", "plain.example.net", "Open")
         tracker = classify_risk("https", "stats.doubleclick.net", "Open")
         startup = classify_risk("https", "api.example.com", "Start", time_delta=1.5, event_id="E001")
+        unreadable = classify_risk("", "", "Open")
 
         self.assertEqual(plain_http.severity, "High")
         self.assertEqual(plain_http.category, "HTTP平文通信")
@@ -40,6 +41,9 @@ class AnalyzeLogsTest(unittest.TestCase):
         self.assertEqual(startup.severity, "Medium")
         self.assertEqual(startup.category, "起動直後通信")
         self.assertEqual(startup.rule_id, "startup_transmission")
+        self.assertEqual(unreadable.severity, "Unknown")
+        self.assertEqual(unreadable.category, "判定不能通信")
+        self.assertEqual(unreadable.rule_id, "unreadable_traffic")
 
     def test_detects_sensitive_url_fields_without_exposing_values(self):
         labels = detect_sensitive_url_fields(
@@ -139,6 +143,61 @@ class AnalyzeLogsTest(unittest.TestCase):
             self.assertEqual(second["risk"], "Low")
             self.assertEqual(second["risk_rule"], "no_traffic")
             self.assertIn("5秒以内", second["reason"])
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_derives_http_scheme_from_url_before_classifying(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            output_path = base / "risk_results.csv"
+
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E002,100.0,com.example/.MainActivity,tap,Open Page\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code\n"
+                "101,,,GET,http://plain.example.net/path,200\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(str(ui_path), str(traffic_path), str(output_path), window_seconds=5)
+
+            first = df.iloc[0]
+            self.assertEqual(first["observability_status"], "observed")
+            self.assertEqual(first["scheme"], "http")
+            self.assertEqual(first["domain"], "plain.example.net")
+            self.assertEqual(first["risk"], "High")
+            self.assertEqual(first["risk_rule"], "cleartext_http")
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_marks_unreadable_traffic_with_separate_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            output_path = base / "risk_results.csv"
+
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E002,100.0,com.example/.MainActivity,tap,Open Page\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code\n"
+                "101,,,GET,,0\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(str(ui_path), str(traffic_path), str(output_path), window_seconds=5)
+
+            first = df.iloc[0]
+            self.assertEqual(first["observability_status"], "unreadable")
+            self.assertEqual(first["risk"], "Unknown")
+            self.assertEqual(first["risk_rule"], "unreadable_traffic")
+            self.assertEqual(first["risk_category"], "判定不能通信")
 
     @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
     def test_analyze_filters_connectivity_probes_by_default(self):
