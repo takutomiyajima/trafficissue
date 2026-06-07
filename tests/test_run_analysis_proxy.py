@@ -80,20 +80,103 @@ class RunAnalysisProxyTest(unittest.TestCase):
             previous_cwd = os.getcwd()
             os.chdir(tmp)
             try:
-                proc = run_analysis.start_mitmproxy(8080)
+                traffic_path = Path(tmp) / "logs" / "traffic_logs.csv"
+                proc = run_analysis.start_mitmproxy(8080, traffic_path=traffic_path)
 
                 self.assertIs(proc, mock_popen.return_value)
-                traffic_path = Path(tmp) / "logs" / "traffic_logs.csv"
                 self.assertEqual(
                     traffic_path.read_text(encoding="utf-8"),
                     "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
                 )
                 command = mock_popen.call_args.args[0]
-                self.assertIn(str(Path(tmp) / "capture_traffic.py"), command)
+                self.assertIn(str(run_analysis.CAPTURE_SCRIPT_PATH), command)
                 self.assertIn("block_global=false", command)
                 self.assertEqual(mock_popen.call_args.kwargs["env"]["TRAFFIC_LOG_PATH"], str(traffic_path))
             finally:
                 os.chdir(previous_cwd)
+
+    @patch("run_analysis.time.sleep")
+    @patch("run_analysis.subprocess.Popen")
+    @patch("run_analysis.shutil.which", return_value="/usr/local/bin/mitmdump")
+    def test_start_mitmproxy_reports_early_exit_and_returns_none(self, mock_which, mock_popen, mock_sleep):
+        class FakeProcess:
+            returncode = 1
+
+            def poll(self):
+                return self.returncode
+
+        mock_popen.return_value = FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                proc = run_analysis.start_mitmproxy(8080, traffic_path=Path(tmp) / "traffic_logs.csv")
+
+        self.assertIsNone(proc)
+        warning = output.getvalue()
+        self.assertIn("mitmdump exited early", warning)
+        self.assertIn("--skip-capture", warning)
+
+
+    @patch("run_analysis.stop_process")
+    @patch("run_analysis.restore_device_proxy")
+    @patch("run_analysis.warn_if_no_traffic_records")
+    @patch("run_analysis.run")
+    @patch("run_analysis.setup_device_proxy")
+    @patch("run_analysis.start_mitmproxy")
+    @patch("run_analysis.os.path.exists", return_value=True)
+    def test_main_uses_one_absolute_log_directory_for_capture_ui_and_analysis(
+        self,
+        mock_exists,
+        mock_start_mitmproxy,
+        mock_setup_device_proxy,
+        mock_run,
+        mock_warn_if_no_traffic_records,
+        mock_restore_device_proxy,
+        mock_stop_process,
+    ):
+        fake_proc = object()
+        fake_proxy_state = run_analysis.ProxyState("10.0.2.2", 8080, "", False)
+        mock_start_mitmproxy.return_value = fake_proc
+        mock_setup_device_proxy.return_value = fake_proxy_state
+
+        args = run_analysis.argparse.Namespace(
+            apk="/tmp/app.apk",
+            serial="emulator-5554",
+            package="com.example.app",
+            max_events=5,
+            wait=2,
+            listen_port=8080,
+            window=7.0,
+            allowed_domains=["example.com"],
+            include_system_probes=False,
+            skip_capture=False,
+            skip_proxy_setup=False,
+            proxy_host="10.0.2.2",
+            no_adb_reverse=True,
+        )
+
+        with patch("run_analysis.parse_args", return_value=args), patch("analyze_logs.analyze") as mock_analyze:
+            exit_code = run_analysis.main()
+
+        self.assertEqual(exit_code, 0)
+        mock_start_mitmproxy.assert_called_once_with(8080, traffic_path=run_analysis.DEFAULT_TRAFFIC_LOG_PATH.resolve())
+        mock_run.assert_called_once()
+        command = mock_run.call_args.args[0]
+        self.assertIn(str(run_analysis.AUTO_RUNNER_PATH), command)
+        self.assertIn("--log", command)
+        self.assertEqual(command[command.index("--log") + 1], str(run_analysis.DEFAULT_UI_LOG_PATH.resolve()))
+        mock_warn_if_no_traffic_records.assert_called_once_with(run_analysis.DEFAULT_TRAFFIC_LOG_PATH.resolve())
+        mock_analyze.assert_called_once_with(
+            ui_path=str(run_analysis.DEFAULT_UI_LOG_PATH.resolve()),
+            traffic_path=str(run_analysis.DEFAULT_TRAFFIC_LOG_PATH.resolve()),
+            output_path=str(run_analysis.DEFAULT_RISK_RESULTS_PATH.resolve()),
+            window_seconds=7.0,
+            allowed_domains=["example.com"],
+            include_system_probes=False,
+        )
+        mock_restore_device_proxy.assert_called_once_with(fake_proxy_state, serial="emulator-5554")
+        mock_stop_process.assert_called_once_with(fake_proc)
 
     def test_warn_if_no_traffic_records_reports_header_only_log(self):
         with tempfile.TemporaryDirectory() as tmp:
