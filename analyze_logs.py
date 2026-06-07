@@ -33,6 +33,9 @@ RESULT_COLUMNS = [
     "content_type",
     "request_size",
     "response_size",
+    "response_timestamp",
+    "duration_ms",
+    "error",
     "risk",
     "risk_category",
     "risk_rule",
@@ -63,6 +66,9 @@ TRAFFIC_COLUMNS = [
     "content_type",
     "request_size",
     "response_size",
+    "response_timestamp",
+    "duration_ms",
+    "error",
 ]
 UI_COLUMNS = ["event_id", "timestamp", "screen", "action", "element_text"]
 
@@ -128,6 +134,10 @@ def classify_risk(
     url: str = "",
     time_delta: object = "",
     event_id: str = "",
+    status_code: object = "",
+    method: str = "",
+    request_size: object = "",
+    error: object = "",
 ) -> RuleResult:
     """Classify privacy risk with the focused MVP rule set."""
     return evaluate_traffic_risk(
@@ -137,6 +147,10 @@ def classify_risk(
         allowed_domains=allowed_domains,
         time_delta=time_delta,
         event_id=event_id,
+        status_code=status_code,
+        method=method,
+        request_size=request_size,
+        error=error,
     )
 
 
@@ -162,6 +176,54 @@ def _ensure_columns(df, columns: Sequence[str]):
     return df.reindex(columns=list(columns) + [column for column in df.columns if column not in columns])
 
 
+
+def build_result_for_traffic_row(traffic_row, allowed_domains: Sequence[str], event_id: str = "") -> dict:
+    """Classify a single traffic row without requiring UI automation metadata."""
+    traffic_timestamp = traffic_row.get("timestamp")
+    traffic_time = float(traffic_timestamp) if _clean(traffic_timestamp) else ""
+    url = _clean(traffic_row.get("url"))
+    scheme, domain = _derive_scheme_domain(traffic_row.get("scheme"), traffic_row.get("domain"), url)
+    decision = classify_risk(
+        scheme=scheme,
+        domain=domain,
+        allowed_domains=allowed_domains,
+        url=url,
+        event_id=event_id,
+        status_code=traffic_row.get("status_code"),
+        method=traffic_row.get("method"),
+        request_size=traffic_row.get("request_size"),
+        error=traffic_row.get("error"),
+    )
+    return {
+        "event_id": event_id,
+        "app_package": "",
+        "ui_timestamp": "",
+        "screen": "",
+        "action": "",
+        "element_text": "",
+        "traffic_timestamp": traffic_time,
+        "time_delta": "",
+        "observability_status": observability_status_for_decision(decision),
+        "domain": domain,
+        "destination_party": destination_party(domain, allowed_domains),
+        "scheme": scheme,
+        "method": _clean(traffic_row.get("method")),
+        "url": url,
+        "status_code": _clean(traffic_row.get("status_code")),
+        "content_type": _clean(traffic_row.get("content_type")),
+        "request_size": _clean(traffic_row.get("request_size")),
+        "response_size": _clean(traffic_row.get("response_size")),
+        "response_timestamp": _clean(traffic_row.get("response_timestamp")),
+        "duration_ms": _clean(traffic_row.get("duration_ms")),
+        "error": _clean(traffic_row.get("error")),
+        "risk": decision.severity,
+        "risk_category": decision.category,
+        "risk_rule": decision.rule_id,
+        "risk_signal": decision.signal,
+        "data_categories": ";".join(decision.data_categories),
+        "reason": decision.reason,
+    }
+
 def analyze(
     ui_path: str = DEFAULT_UI_PATH,
     traffic_path: str = DEFAULT_TRAFFIC_PATH,
@@ -174,10 +236,10 @@ def analyze(
 
     allowed_domains = tuple(allowed_domains or DEFAULT_ALLOWED_DOMAINS)
 
-    if not os.path.exists(ui_path) or not os.path.exists(traffic_path):
-        raise FileNotFoundError("Logs not found. Please run capture and runner first.")
+    if not os.path.exists(traffic_path):
+        raise FileNotFoundError("Traffic log not found. Please run capture first.")
 
-    ui_df = _read_log_csv(ui_path, UI_COLUMNS)
+    ui_df = _read_log_csv(ui_path, UI_COLUMNS) if os.path.exists(ui_path) else pd.DataFrame(columns=UI_COLUMNS)
     traffic_df = _read_log_csv(traffic_path, TRAFFIC_COLUMNS)
 
     ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
@@ -200,7 +262,12 @@ def analyze(
 
     results: List[dict] = []
 
-    for _, ui_row in ui_df.dropna(subset=["timestamp"]).iterrows():
+    ui_rows = ui_df.dropna(subset=["timestamp"])
+    if ui_rows.empty:
+        for row_index, traffic_row in traffic_df.sort_values("timestamp").iterrows():
+            results.append(build_result_for_traffic_row(traffic_row, allowed_domains, event_id=f"T{row_index + 1:03d}"))
+
+    for _, ui_row in ui_rows.iterrows():
         ui_time = float(ui_row["timestamp"])
         event_id = _clean(ui_row.get("event_id"))
         element_text = _clean(ui_row.get("element_text"))
@@ -234,6 +301,9 @@ def analyze(
                     "content_type": "",
                     "request_size": "",
                     "response_size": "",
+                    "response_timestamp": "",
+                    "duration_ms": "",
+                    "error": "",
                     "risk": "Low",
                     "risk_category": "通信なし",
                     "risk_rule": "no_traffic",
@@ -261,6 +331,10 @@ def analyze(
                 url=url,
                 time_delta=delta,
                 event_id=event_id,
+                status_code=traffic_row.get("status_code"),
+                method=traffic_row.get("method"),
+                request_size=traffic_row.get("request_size"),
+                error=traffic_row.get("error"),
             )
 
             results.append(
@@ -283,6 +357,9 @@ def analyze(
                     "content_type": _clean(traffic_row.get("content_type")),
                     "request_size": _clean(traffic_row.get("request_size")),
                     "response_size": _clean(traffic_row.get("response_size")),
+                    "response_timestamp": _clean(traffic_row.get("response_timestamp")),
+                    "duration_ms": _clean(traffic_row.get("duration_ms")),
+                    "error": _clean(traffic_row.get("error")),
                     "risk": decision.severity,
                     "risk_category": decision.category,
                     "risk_rule": decision.rule_id,
@@ -300,8 +377,8 @@ def analyze(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Correlate Android UI events with traffic logs and classify risk.")
-    parser.add_argument("--ui-log", default=DEFAULT_UI_PATH, help="Path to ui_events.csv.")
+    parser = argparse.ArgumentParser(description="Classify captured traffic logs. UI logs are optional.")
+    parser.add_argument("--ui-log", default=DEFAULT_UI_PATH, help="Optional path to ui_events.csv for UI correlation.")
     parser.add_argument("--traffic-log", default=DEFAULT_TRAFFIC_PATH, help="Path to traffic_logs.csv.")
     parser.add_argument("--output", default=DEFAULT_OUTPUT_PATH, help="Path to write risk_results.csv.")
     parser.add_argument("--window", type=float, default=DEFAULT_WINDOW_SECONDS, help="Seconds after each UI event to correlate traffic.")

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Union
 
 
-TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
+TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size", "response_timestamp", "duration_ms", "error"]
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_UI_LOG_PATH = DEFAULT_LOG_DIR / "ui_events.csv"
