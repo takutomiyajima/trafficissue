@@ -29,6 +29,28 @@ class RunAnalysisProxyTest(unittest.TestCase):
         self.assertTrue(state.reverse_configured)
         mock_adb.assert_called_once_with(["reverse", "tcp:8080", "tcp:8080"], serial="device-1", check=False)
         mock_adb_shell.assert_any_call(["settings", "put", "global", "http_proxy", "127.0.0.1:8080"], serial="device-1")
+        mock_adb_shell.assert_any_call(["settings", "put", "global", "global_http_proxy_host", "127.0.0.1"], serial="device-1", check=False)
+        mock_adb_shell.assert_any_call(["settings", "put", "global", "global_http_proxy_port", "8080"], serial="device-1", check=False)
+
+    @patch("run_analysis.adb_shell")
+    @patch("run_analysis.adb")
+    def test_setup_proxy_uses_emulator_gateway_without_reverse(self, mock_adb, mock_adb_shell):
+        def adb_shell_side_effect(command, serial=None, check=True):
+            if command == ["settings", "get", "global", "http_proxy"]:
+                return run_analysis.subprocess.CompletedProcess(["adb"], 0, stdout=":0\n", stderr="")
+            if command == ["getprop", "ro.kernel.qemu"]:
+                return run_analysis.subprocess.CompletedProcess(["adb"], 0, stdout="1\n", stderr="")
+            return run_analysis.subprocess.CompletedProcess(["adb"], 0, stdout="", stderr="")
+
+        mock_adb_shell.side_effect = adb_shell_side_effect
+
+        state = run_analysis.setup_device_proxy(8080, serial="emulator-5554")
+
+        self.assertEqual(state.host, "10.0.2.2")
+        self.assertEqual(state.previous_http_proxy, "")
+        self.assertFalse(state.reverse_configured)
+        mock_adb.assert_not_called()
+        mock_adb_shell.assert_any_call(["settings", "put", "global", "http_proxy", "10.0.2.2:8080"], serial="emulator-5554")
 
     @patch("run_analysis.adb_shell")
     @patch("run_analysis.adb")
@@ -64,7 +86,7 @@ class RunAnalysisProxyTest(unittest.TestCase):
                 traffic_path = Path(tmp) / "logs" / "traffic_logs.csv"
                 self.assertEqual(
                     traffic_path.read_text(encoding="utf-8"),
-                    "timestamp,scheme,domain,method,url,status_code\n",
+                    "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
                 )
                 command = mock_popen.call_args.args[0]
                 self.assertIn(str(Path(tmp) / "capture_traffic.py"), command)
@@ -76,13 +98,15 @@ class RunAnalysisProxyTest(unittest.TestCase):
     def test_warn_if_no_traffic_records_reports_header_only_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             traffic_path = Path(tmp) / "traffic_logs.csv"
-            traffic_path.write_text("timestamp,scheme,domain,method,url,status_code\n", encoding="utf-8")
+            traffic_path.write_text("timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n", encoding="utf-8")
 
             output = io.StringIO()
             with redirect_stdout(output):
                 run_analysis.warn_if_no_traffic_records(str(traffic_path))
 
-            self.assertIn("contains only the header", output.getvalue())
+            warning = output.getvalue()
+            self.assertIn("contains only the header", warning)
+            self.assertIn("--proxy-host 10.0.2.2 --no-adb-reverse", warning)
 
 
 if __name__ == "__main__":

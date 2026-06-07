@@ -30,20 +30,26 @@ class CaptureTrafficTest(unittest.TestCase):
                         host="api.example.com",
                         method="GET",
                         url="https://api.example.com/v1/status",
+                        headers={"content-type": "application/json"},
+                        raw_content=b"",
                     ),
-                    response=types.SimpleNamespace(status_code=200),
+                    response=types.SimpleNamespace(status_code=200, raw_content=b"ok"),
                 )
 
                 logger.response(flow)
 
-                self.assertIn("status_code", csv_path.read_text(encoding="utf-8"))
-                self.assertIn(",200\n", csv_path.read_text(encoding="utf-8"))
+                csv_text = csv_path.read_text(encoding="utf-8")
+                self.assertIn("status_code", csv_text)
+                self.assertIn("content_type", csv_text)
+                self.assertIn("request_size", csv_text)
+                self.assertIn("response_size", csv_text)
+                self.assertIn(",200,application/json,0,2\n", csv_text)
 
                 error_csv_path = Path(tmp) / "traffic_error_logs.csv"
                 error_logger = capture_traffic.TrafficLogger(str(error_csv_path))
                 error_logger.error(flow)
 
-                self.assertIn(",0\n", error_csv_path.read_text(encoding="utf-8"))
+                self.assertIn(",0,application/json,0,2\n", error_csv_path.read_text(encoding="utf-8"))
         finally:
             if original_mitmproxy is None:
                 sys.modules.pop("mitmproxy", None)

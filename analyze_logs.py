@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
+
+from risk_rules import (
+    RuleResult,
+    destination_party,
+    detect_sensitive_url_fields,
+    evaluate_traffic_risk,
+    is_allowed_domain,
+)
 
 
 RESULT_COLUMNS = [
     "event_id",
+    "app_package",
     "ui_timestamp",
     "screen",
     "action",
@@ -16,12 +24,19 @@ RESULT_COLUMNS = [
     "time_delta",
     "observability_status",
     "domain",
+    "destination_party",
     "scheme",
     "method",
     "url",
     "status_code",
+    "content_type",
+    "request_size",
+    "response_size",
     "risk",
     "risk_category",
+    "risk_rule",
+    "risk_signal",
+    "data_categories",
     "reason",
 ]
 
@@ -31,31 +46,24 @@ DEFAULT_TRAFFIC_PATH = "logs/traffic_logs.csv"
 DEFAULT_OUTPUT_PATH = "logs/risk_results.csv"
 DEFAULT_WINDOW_SECONDS = 5.0
 DEFAULT_ALLOWED_DOMAINS = ("example.com", "api.example.com")
-LOCATION_KEYWORDS = ("location", "位置", "現在地", "地図", "map", "maps", "gps")
-MAPS_DOMAINS = ("maps.googleapis.com",)
 SYSTEM_CONNECTIVITY_CHECK_DOMAINS = (
     "connectivitycheck.gstatic.com",
     "www.google.com",
     "play.googleapis.com",
 )
 SYSTEM_CONNECTIVITY_CHECK_PATHS = ("/generate_204", "/gen_204")
-TRACKER_KEYWORDS = (
-    "doubleclick.net",
-    "googlesyndication.com",
-    "google-analytics.com",
-    "firebase-settings.crashlytics.com",
-    "app-measurement.com",
-    "facebook.com",
-    "adjust.com",
-    "appsflyer.com",
-)
-
-
-@dataclass(frozen=True)
-class RiskDecision:
-    risk: str
-    risk_category: str
-    reason: str
+TRAFFIC_COLUMNS = [
+    "timestamp",
+    "scheme",
+    "domain",
+    "method",
+    "url",
+    "status_code",
+    "content_type",
+    "request_size",
+    "response_size",
+]
+UI_COLUMNS = ["event_id", "timestamp", "screen", "action", "element_text"]
 
 
 def _clean(value: object) -> str:
@@ -65,20 +73,10 @@ def _clean(value: object) -> str:
     return str(value).strip()
 
 
-def _is_allowed_domain(domain: str, allowed_domains: Sequence[str]) -> bool:
-    normalized_domain = domain.lower().rstrip(".")
-    for allowed in allowed_domains:
-        normalized_allowed = allowed.lower().strip().rstrip(".")
-        if not normalized_allowed:
-            continue
-        if normalized_domain == normalized_allowed or normalized_domain.endswith(f".{normalized_allowed}"):
-            return True
-    return False
-
-
-def _contains_any(value: str, keywords: Iterable[str]) -> bool:
-    normalized = value.lower()
-    return any(keyword.lower() in normalized for keyword in keywords)
+def extract_app_package(screen: str) -> str:
+    """Extract package-like prefix from screen values such as com.example/.MainActivity."""
+    screen = _clean(screen)
+    return screen.split("/", 1)[0] if "/" in screen else ""
 
 
 def is_system_connectivity_probe(scheme: str, domain: str, url: str, status_code: object = "") -> bool:
@@ -87,7 +85,7 @@ def is_system_connectivity_probe(scheme: str, domain: str, url: str, status_code
 
     normalized_scheme = scheme.lower().strip()
     normalized_domain = domain.lower().strip().rstrip(".")
-    if normalized_scheme != "http" or not _is_allowed_domain(normalized_domain, SYSTEM_CONNECTIVITY_CHECK_DOMAINS):
+    if normalized_scheme != "http" or not is_allowed_domain(normalized_domain, SYSTEM_CONNECTIVITY_CHECK_DOMAINS):
         return False
 
     path = urlparse(url).path if url else ""
@@ -101,70 +99,25 @@ def is_system_connectivity_probe(scheme: str, domain: str, url: str, status_code
 def classify_risk(
     scheme: str,
     domain: str,
-    ui_text: str,
+    ui_text: str = "",
     allowed_domains: Sequence[str] = DEFAULT_ALLOWED_DOMAINS,
-) -> RiskDecision:
-    """Classify traffic risk using UI context, protocol, and destination domain."""
-    normalized_scheme = scheme.lower()
-    normalized_domain = domain.lower()
-    normalized_ui_text = ui_text.lower()
-
-    if not normalized_scheme or not normalized_domain:
-        return RiskDecision(
-            "Low",
-            "判定保留",
-            "通信先ドメインまたは通信方式を取得できなかったため、リスク判定は保留扱いです。",
-        )
-
-    if normalized_scheme == "http":
-        return RiskDecision(
-            "High",
-            "平文HTTP通信",
-            "UI操作後に暗号化されていないHTTP通信を検知しました（盗聴・改ざんリスク）。",
-        )
-
-    if _contains_any(normalized_domain, TRACKER_KEYWORDS):
-        return RiskDecision(
-            "High",
-            "広告・解析トラッカー",
-            "UI操作後に広告・解析・トラッカー系ドメインへの通信を検知しました。",
-        )
-
-    if _contains_any(normalized_domain, MAPS_DOMAINS) and _contains_any(normalized_ui_text, LOCATION_KEYWORDS):
-        return RiskDecision(
-            "High",
-            "位置情報関連通信",
-            "位置情報関連のUI操作後に地図APIへの通信を検知しました。位置情報送信の可能性があります。",
-        )
-
-    if normalized_scheme == "https":
-        if _is_allowed_domain(normalized_domain, allowed_domains):
-            return RiskDecision(
-                "Low",
-                "First-party HTTPS",
-                "allowlist内のFirst-party HTTPS通信として扱いました。",
-            )
-        return RiskDecision(
-            "Middle",
-            "外部HTTPS通信",
-            "allowlist外のHTTPS通信を検知しました。HTTPSでも外部送信の可能性があるため注意が必要です。",
-        )
-
-    return RiskDecision(
-        "Middle",
-        "未分類プロトコル",
-        f"未分類の通信方式（{scheme}）を検知しました。追加確認が必要です。",
+    url: str = "",
+    time_delta: object = "",
+    event_id: str = "",
+) -> RuleResult:
+    """Classify privacy risk with the focused MVP rule set."""
+    return evaluate_traffic_risk(
+        scheme=scheme,
+        domain=domain,
+        url=url,
+        allowed_domains=allowed_domains,
+        time_delta=time_delta,
+        event_id=event_id,
     )
 
 
 def _read_log_csv(path: str, columns: Sequence[str]):
-    """Read a tool-generated CSV log and return a dataframe with stable columns.
-
-    mitmproxy can be interrupted before it writes the traffic header, and some CSV
-    tools add whitespace or a UTF-8 BOM to column names.  Normalize those cases so
-    later timestamp correlation never raises a KeyError for a missing expected
-    column.
-    """
+    """Read a tool-generated CSV log and return a dataframe with stable columns."""
     import pandas as pd
     from pandas.errors import EmptyDataError
 
@@ -200,15 +153,16 @@ def analyze(
     if not os.path.exists(ui_path) or not os.path.exists(traffic_path):
         raise FileNotFoundError("Logs not found. Please run capture and runner first.")
 
-    ui_df = _read_log_csv(ui_path, ["event_id", "timestamp", "screen", "action", "element_text"])
-    traffic_df = _read_log_csv(traffic_path, ["timestamp", "scheme", "domain", "method", "url", "status_code"])
+    ui_df = _read_log_csv(ui_path, UI_COLUMNS)
+    traffic_df = _read_log_csv(traffic_path, TRAFFIC_COLUMNS)
 
     ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
     traffic_df["timestamp"] = pd.to_numeric(traffic_df["timestamp"], errors="coerce")
     traffic_df = traffic_df.dropna(subset=["timestamp"]).copy()
-    traffic_df = traffic_df.drop_duplicates(subset=["timestamp", "scheme", "domain", "method", "url", "status_code"])
+    traffic_df = _ensure_columns(traffic_df, TRAFFIC_COLUMNS)
+    traffic_df = traffic_df.drop_duplicates(subset=TRAFFIC_COLUMNS)
 
-    if not include_system_probes:
+    if not include_system_probes and not traffic_df.empty:
         system_probe_mask = traffic_df.apply(
             lambda row: is_system_connectivity_probe(
                 _clean(row.get("scheme")),
@@ -219,6 +173,7 @@ def analyze(
             axis=1,
         )
         traffic_df = traffic_df[~system_probe_mask].copy()
+        traffic_df = _ensure_columns(traffic_df, TRAFFIC_COLUMNS)
 
     results: List[dict] = []
 
@@ -228,6 +183,7 @@ def analyze(
         element_text = _clean(ui_row.get("element_text"))
         screen = _clean(ui_row.get("screen"))
         action = _clean(ui_row.get("action")) or "tap"
+        app_package = extract_app_package(screen)
 
         matched_traffic = traffic_df[
             (traffic_df["timestamp"] >= ui_time)
@@ -238,6 +194,7 @@ def analyze(
             results.append(
                 {
                     "event_id": event_id,
+                    "app_package": app_package,
                     "ui_timestamp": ui_time,
                     "screen": screen,
                     "action": action,
@@ -246,12 +203,19 @@ def analyze(
                     "time_delta": "",
                     "observability_status": "none",
                     "domain": "",
+                    "destination_party": "none",
                     "scheme": "",
                     "method": "",
                     "url": "",
                     "status_code": "",
+                    "content_type": "",
+                    "request_size": "",
+                    "response_size": "",
                     "risk": "Low",
                     "risk_category": "通信なし",
+                    "risk_rule": "no_traffic",
+                    "risk_signal": "no_request_in_window",
+                    "data_categories": "",
                     "reason": f"操作後{window_seconds:g}秒以内に通信は観測されませんでした。",
                 }
             )
@@ -259,28 +223,45 @@ def analyze(
 
         for _, traffic_row in matched_traffic.iterrows():
             traffic_time = float(traffic_row["timestamp"])
-            delta = traffic_time - ui_time
+            delta = round(traffic_time - ui_time, 3)
             scheme = _clean(traffic_row.get("scheme"))
             domain = _clean(traffic_row.get("domain"))
-            decision = classify_risk(scheme, domain, element_text, allowed_domains)
+            url = _clean(traffic_row.get("url"))
+            decision = classify_risk(
+                scheme=scheme,
+                domain=domain,
+                ui_text=element_text,
+                allowed_domains=allowed_domains,
+                url=url,
+                time_delta=delta,
+                event_id=event_id,
+            )
 
             results.append(
                 {
                     "event_id": event_id,
+                    "app_package": app_package,
                     "ui_timestamp": ui_time,
                     "screen": screen,
                     "action": action,
                     "element_text": element_text,
                     "traffic_timestamp": traffic_time,
-                    "time_delta": round(delta, 3),
+                    "time_delta": delta,
                     "observability_status": "observed",
                     "domain": domain,
+                    "destination_party": destination_party(domain, allowed_domains),
                     "scheme": scheme,
                     "method": _clean(traffic_row.get("method")),
-                    "url": _clean(traffic_row.get("url")),
+                    "url": url,
                     "status_code": _clean(traffic_row.get("status_code")),
-                    "risk": decision.risk,
-                    "risk_category": decision.risk_category,
+                    "content_type": _clean(traffic_row.get("content_type")),
+                    "request_size": _clean(traffic_row.get("request_size")),
+                    "response_size": _clean(traffic_row.get("response_size")),
+                    "risk": decision.severity,
+                    "risk_category": decision.category,
+                    "risk_rule": decision.rule_id,
+                    "risk_signal": decision.signal,
+                    "data_categories": ";".join(decision.data_categories),
                     "reason": decision.reason,
                 }
             )

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 
-TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code"]
+TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,8 @@ class ProxyState:
     port: int
     previous_http_proxy: str
     reverse_configured: bool
+
+
 
 
 def run(command: List[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -93,8 +95,9 @@ def warn_if_no_traffic_records(traffic_path: str = "logs/traffic_logs.csv") -> N
     if len(non_empty_lines) <= 1:
         print(
             f"[WARN] {traffic_path} contains only the header and no captured requests. "
-            "Check that the app uses the configured Android HTTP proxy, the mitmproxy CA is trusted for HTTPS, "
-            "and the tested actions actually perform network requests."
+            "Check that the app uses the configured Android HTTP proxy and the tested actions actually perform network requests. "
+            "For Android Emulator, try --proxy-host 10.0.2.2 --no-adb-reverse if needed; "
+            "for HTTPS, install/trust the mitmproxy CA or use HTTP test endpoints first."
         )
 
 
@@ -118,12 +121,21 @@ def local_route_ip() -> str:
         return sock.getsockname()[0]
 
 
+def is_emulator(serial: Optional[str] = None) -> bool:
+    proc = adb_shell(["getprop", "ro.kernel.qemu"], serial=serial, check=False)
+    if proc.returncode == 0 and proc.stdout.strip() == "1":
+        return True
+    if serial and serial.startswith("emulator-"):
+        return True
+    return False
+
+
 def get_android_http_proxy(serial: Optional[str] = None) -> str:
     proc = adb_shell(["settings", "get", "global", "http_proxy"], serial=serial, check=False)
     if proc.returncode != 0:
         return ""
     value = proc.stdout.strip()
-    return "" if value in {"", "null"} else value
+    return "" if value in {"", "null", ":0"} else value
 
 
 def clear_android_http_proxy(serial: Optional[str] = None) -> None:
@@ -135,6 +147,8 @@ def clear_android_http_proxy(serial: Optional[str] = None) -> None:
 
 def set_android_http_proxy(host: str, port: int, serial: Optional[str] = None) -> None:
     adb_shell(["settings", "put", "global", "http_proxy", f"{host}:{port}"], serial=serial)
+    adb_shell(["settings", "put", "global", "global_http_proxy_host", host], serial=serial, check=False)
+    adb_shell(["settings", "put", "global", "global_http_proxy_port", str(port)], serial=serial, check=False)
 
 
 def setup_device_proxy(
@@ -148,6 +162,9 @@ def setup_device_proxy(
 
     if proxy_host:
         host = proxy_host
+    elif is_emulator(serial):
+        host = "10.0.2.2"
+        print(f"[ADB] Emulator detected; using Android emulator host gateway {host}:{listen_port}")
     elif use_adb_reverse:
         reverse = adb(["reverse", f"tcp:{listen_port}", f"tcp:{listen_port}"], serial=serial, check=False)
         reverse_configured = reverse.returncode == 0
