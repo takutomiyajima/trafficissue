@@ -65,6 +65,23 @@ class AnalyzeLogsTest(unittest.TestCase):
         self.assertIn("email", decision.data_categories)
         self.assertNotIn("user@example.com", decision.reason)
 
+
+    def test_classify_new_simple_danger_rules(self):
+        upload = classify_risk(
+            "https",
+            "collector.example.net",
+            allowed_domains=("example.com",),
+            method="POST",
+            request_size="42",
+        )
+        error = classify_risk("https", "api.example.com", error="connection reset")
+        server_error = classify_risk("https", "api.example.com", status_code="503")
+
+        self.assertEqual(upload.severity, "Medium")
+        self.assertEqual(upload.rule_id, "third_party_upload")
+        self.assertEqual(error.rule_id, "connection_error")
+        self.assertEqual(server_error.rule_id, "server_error")
+
     def test_destination_party_classifies_allowlisted_domains(self):
         self.assertEqual(destination_party("api.example.com", ("example.com",)), "first-party")
         self.assertEqual(destination_party("tracker.example.net", ("example.com",)), "third-party")
@@ -238,6 +255,31 @@ class AnalyzeLogsTest(unittest.TestCase):
             )
             self.assertEqual(len(df_with_probes), 3)
             self.assertIn("connectivitycheck.gstatic.com", set(df_with_probes["domain"]))
+
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_analyze_can_classify_traffic_log_without_ui_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            traffic_path = base / "traffic_logs.csv"
+            output_path = base / "risk_results.csv"
+
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size,response_timestamp,duration_ms,error\n"
+                "100,https,collector.example.net,POST,https://collector.example.net/upload,200,application/json,12,2,101,1000,\n"
+                "102,https,api.example.com,GET,https://api.example.com,503,,0,0,103,100,\n",
+                encoding="utf-8",
+            )
+
+            df = analyze(str(base / "missing_ui_events.csv"), str(traffic_path), str(output_path), allowed_domains=("example.com",))
+
+            self.assertEqual(len(df), 2)
+            upload = df[df["domain"] == "collector.example.net"].iloc[0]
+            self.assertEqual(upload["event_id"], "T001")
+            self.assertEqual(upload["risk_rule"], "third_party_upload")
+            self.assertEqual(upload["duration_ms"], "1000")
+            server_error = df[df["domain"] == "api.example.com"].iloc[0]
+            self.assertEqual(server_error["risk_rule"], "server_error")
 
     @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
     def test_analyze_handles_empty_traffic_log_as_no_observed_traffic(self):

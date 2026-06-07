@@ -65,13 +65,16 @@ class CaptureTrafficTest(unittest.TestCase):
                 self.assertIn("content_type", csv_text)
                 self.assertIn("request_size", csv_text)
                 self.assertIn("response_size", csv_text)
-                self.assertIn(",200,application/json,0,2\n", csv_text)
+                self.assertIn("response_timestamp", csv_text)
+                self.assertIn("duration_ms", csv_text)
+                self.assertIn("error", csv_text)
+                self.assertIn(",200,application/json,0,2,", csv_text)
 
                 error_csv_path = Path(tmp) / "traffic_error_logs.csv"
                 error_logger = capture_traffic.TrafficLogger(str(error_csv_path))
                 error_logger.error(flow)
 
-                self.assertIn(",0,application/json,0,2\n", error_csv_path.read_text(encoding="utf-8"))
+                self.assertIn(",0,application/json,0,2,", error_csv_path.read_text(encoding="utf-8"))
 
     def test_request_writes_http_to_csv_before_response(self):
         with fake_capture_traffic_module() as capture_traffic:

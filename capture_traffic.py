@@ -2,12 +2,30 @@ import csv
 import datetime
 import os
 from pathlib import Path
+from time import monotonic
 from mitmproxy import http
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_TRAFFIC_LOG_PATH = str(PROJECT_ROOT / "logs" / "traffic_logs.csv")
-TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size"]
+TRAFFIC_LOG_COLUMNS = [
+    "timestamp",
+    "scheme",
+    "domain",
+    "method",
+    "url",
+    "status_code",
+    "content_type",
+    "request_size",
+    "response_size",
+    "response_timestamp",
+    "duration_ms",
+    "error",
+]
+
+
+def _now_timestamp() -> float:
+    return round(datetime.datetime.now().timestamp(), 3)
 
 
 def initialize_traffic_log(filepath: str = DEFAULT_TRAFFIC_LOG_PATH, reset: bool = False) -> None:
@@ -22,10 +40,11 @@ def initialize_traffic_log(filepath: str = DEFAULT_TRAFFIC_LOG_PATH, reset: bool
 
 
 class TrafficLogger:
-    def __init__(self, filepath: str = DEFAULT_TRAFFIC_LOG_PATH):
+    def __init__(self, filepath: str = DEFAULT_TRAFFIC_LOG_PATH, reset: bool = False):
         self.filepath = filepath
         self._request_rows = {}
-        self._ensure_log_file(reset=True)
+        self._request_started_at = {}
+        self._ensure_log_file(reset=reset)
 
     def _ensure_log_file(self, reset: bool = False) -> None:
         initialize_traffic_log(self.filepath, reset=reset)
@@ -33,12 +52,20 @@ class TrafficLogger:
     def _flow_key(self, flow: http.HTTPFlow) -> str:
         return str(getattr(flow, "id", id(flow)))
 
-    def _build_row(self, flow: http.HTTPFlow, status_code: int = 0) -> list[object]:
-        timestamp = int(datetime.datetime.now().timestamp())
+    def _build_row(
+        self,
+        flow: http.HTTPFlow,
+        status_code: int = 0,
+        request_timestamp: object = None,
+        response_timestamp: object = "",
+        duration_ms: object = "",
+        error: str = "",
+    ) -> list[object]:
+        request_timestamp = _now_timestamp() if request_timestamp is None else request_timestamp
         request_body = flow.request.raw_content or b""
         response_body = flow.response.raw_content if flow.response and flow.response.raw_content else b""
         return [
-            timestamp,
+            request_timestamp,
             flow.request.scheme,
             flow.request.host,
             flow.request.method,
@@ -47,6 +74,9 @@ class TrafficLogger:
             flow.request.headers.get("content-type", ""),
             len(request_body),
             len(response_body),
+            response_timestamp,
+            duration_ms,
+            error,
         ]
 
     def _append_row(self, row: list[object]) -> None:
@@ -84,22 +114,42 @@ class TrafficLogger:
         return row
 
     def request(self, flow: http.HTTPFlow):
-        self._request_rows[self._flow_key(flow)] = self._write_flow(flow, 0)
+        key = self._flow_key(flow)
+        self._request_started_at[key] = monotonic()
+        self._request_rows[key] = self._write_flow(flow, 0)
 
     def response(self, flow: http.HTTPFlow):
+        key = self._flow_key(flow)
         status_code = flow.response.status_code if flow.response else 0
-        row = self._build_row(flow, status_code=status_code)
-        request_row = self._request_rows.pop(self._flow_key(flow), None)
-        if request_row is not None:
-            row[0] = request_row[0]
+        request_row = self._request_rows.pop(key, None)
+        request_started_at = self._request_started_at.pop(key, None)
+        response_timestamp = _now_timestamp()
+        duration_ms = round((monotonic() - request_started_at) * 1000, 1) if request_started_at is not None else ""
+        row = self._build_row(
+            flow,
+            status_code=status_code,
+            request_timestamp=request_row[0] if request_row is not None else None,
+            response_timestamp=response_timestamp,
+            duration_ms=duration_ms,
+        )
         if request_row is None or not self._replace_row(request_row, row):
             self._append_row(row)
 
     def error(self, flow: http.HTTPFlow):
-        row = self._build_row(flow, status_code=0)
-        request_row = self._request_rows.pop(self._flow_key(flow), None)
-        if request_row is not None:
-            row[0] = request_row[0]
+        key = self._flow_key(flow)
+        request_row = self._request_rows.pop(key, None)
+        request_started_at = self._request_started_at.pop(key, None)
+        response_timestamp = _now_timestamp()
+        duration_ms = round((monotonic() - request_started_at) * 1000, 1) if request_started_at is not None else ""
+        message = str(getattr(getattr(flow, "error", None), "msg", "connection_error"))
+        row = self._build_row(
+            flow,
+            status_code=0,
+            request_timestamp=request_row[0] if request_row is not None else None,
+            response_timestamp=response_timestamp,
+            duration_ms=duration_ms,
+            error=message,
+        )
         if request_row is None or not self._replace_row(request_row, row):
             self._append_row(row)
 

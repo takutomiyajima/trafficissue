@@ -101,7 +101,7 @@ class RunAnalysisProxyTest(unittest.TestCase):
                 self.assertIs(proc, mock_popen.return_value)
                 self.assertEqual(
                     traffic_path.read_text(encoding="utf-8"),
-                    "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size\n",
+                    "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size,response_timestamp,duration_ms,error\n",
                 )
                 command = mock_popen.call_args.args[0]
                 self.assertIn(str(run_analysis.CAPTURE_SCRIPT_PATH), command)
