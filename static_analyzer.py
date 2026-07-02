@@ -66,25 +66,45 @@ SDK_HINTS = {
 }
 
 
-DOCUMENTATION_HOSTS = {
+IGNORED_URL_HOST_SUFFIXES = {
+    "flutter.dev",
     "dart.dev",
-    "api.flutter.dev",
-    "docs.flutter.dev",
+    "dartlang.org",
+    "flutter.github.io",
     "dartbug.com",
     "developer.android.com",
     "developer.apple.com",
     "developer.mozilla.org",
-    "docs.microsoft.com",
-    "tools.ietf.org",
-    "www.w3.org",
-    "www.w3c.org",
-    "www.iana.org",
-    "www.unicode.org",
-    "en.wikipedia.org",
-    "github.com",
-    "chromium.googlesource.com",
-    "android.googlesource.com",
+    "w3.org",
+    "w3c.org",
+    "iana.org",
+    "unicode.org",
+    "microsoft.com",
+    "chromium.org",
+    "googlesource.com",
 }
+
+IGNORED_EXACT_HOSTS = {
+    "example.com",
+    "example.org",
+    "localhost",
+    "127.0.0.1",
+}
+
+# Kept as a compatibility alias for callers/tests that imported the old name.
+DOCUMENTATION_HOSTS = IGNORED_URL_HOST_SUFFIXES | IGNORED_EXACT_HOSTS
+
+
+def should_ignore_url_host(hostname: str) -> bool:
+    hostname = hostname.lower()
+
+    if hostname in IGNORED_EXACT_HOSTS:
+        return True
+
+    return any(
+        hostname == suffix or hostname.endswith("." + suffix)
+        for suffix in IGNORED_URL_HOST_SUFFIXES
+    )
 
 
 def clean_url_candidate(value: str) -> Optional[str]:
@@ -104,7 +124,7 @@ def clean_url_candidate(value: str) -> Optional[str]:
 
     hostname = parsed.hostname.lower()
 
-    if hostname in {"localhost", "127.0.0.1"}:
+    if should_ignore_url_host(hostname):
         return None
 
     if "." not in hostname:
@@ -348,8 +368,51 @@ def byte_strings(apk_path: str, min_len: int = 4) -> List[bytes]:
     return re.findall(rb"[ -~]{%d,}" % min_len, data)
 
 
-def extract_apk_strings(apk_path: str, min_len: int = 4) -> List[str]:
-    strings: set[str] = set()
+def classify_source_type(source_file: str) -> str:
+    source = source_file.lower()
+
+    if source.startswith("assets/"):
+        return "asset"
+
+    if source.endswith(".dex"):
+        return "dex"
+
+    if source.endswith(".so"):
+        return "native_library"
+
+    if source.endswith(".xml"):
+        return "xml"
+
+    return "apk_member"
+
+
+def classify_url_confidence(source_file: str, url: str) -> str:
+    source = source_file.lower()
+
+    if "libflutter.so" in source:
+        return "ignore"
+
+    if source.startswith("assets/flutter_assets/"):
+        return "medium"
+
+    if source.endswith(".json"):
+        return "medium"
+
+    if source.endswith(".xml"):
+        return "medium"
+
+    if source.endswith(".dex"):
+        return "low"
+
+    if source.endswith(".so"):
+        return "low"
+
+    return "low"
+
+
+def extract_apk_strings(apk_path: str, min_len: int = 4) -> List[Dict[str, str]]:
+    results: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     target_suffixes = (
         ".dex",
         ".xml",
@@ -363,9 +426,9 @@ def extract_apk_strings(apk_path: str, min_len: int = 4) -> List[str]:
     try:
         with zipfile.ZipFile(apk_path, "r") as apk_zip:
             for info in apk_zip.infolist():
-                name = info.filename.lower()
+                source_file = info.filename
 
-                if not name.endswith(target_suffixes):
+                if not source_file.lower().endswith(target_suffixes):
                     continue
 
                 try:
@@ -376,16 +439,18 @@ def extract_apk_strings(apk_path: str, min_len: int = 4) -> List[str]:
                 for value in re.findall(rb"[ -~]{%d,}" % min_len, data):
                     decoded = safe_decode(value)
 
-                    if decoded:
-                        strings.add(decoded)
+                    if decoded and (source_file, decoded) not in seen:
+                        seen.add((source_file, decoded))
+                        results.append({"source_file": source_file, "text": decoded})
     except zipfile.BadZipFile:
         for value in byte_strings(apk_path, min_len):
             decoded = safe_decode(value)
 
-            if decoded:
-                strings.add(decoded)
+            if decoded and (apk_path, decoded) not in seen:
+                seen.add((apk_path, decoded))
+                results.append({"source_file": apk_path, "text": decoded})
 
-    return sorted(strings)
+    return sorted(results, key=lambda item: (item["source_file"], item["text"]))
 
 
 def safe_decode(value: bytes) -> str:
@@ -437,11 +502,14 @@ def parse_components(badging: str) -> List[Dict[str, object]]:
                 "protected_by_permission": bool(keys.get("permission")),
                 "permission": keys.get("permission", ""),
                 "deep_links": [],
+                "actions": [],
+                "categories": [],
+                "is_launcher": name in launchable,
             }
         )
     for name in launchable:
         if not any(item["name"] == name for item in components):
-            components.append({"type": "activity", "name": name, "exported": True, "protected_by_permission": False, "permission": "", "deep_links": []})
+            components.append({"type": "activity", "name": name, "exported": True, "protected_by_permission": False, "permission": "", "deep_links": [], "actions": ["android.intent.action.MAIN"], "categories": ["android.intent.category.LAUNCHER"], "is_launcher": True})
     return components
 
 
@@ -471,6 +539,31 @@ def extract_deep_links(component: ET.Element) -> List[Dict[str, Optional[str]]]:
             )
 
     return deep_links
+
+
+def extract_intent_filter_info(component: ET.Element) -> Dict[str, object]:
+    actions: set[str] = set()
+    categories: set[str] = set()
+
+    for intent_filter in component.findall("intent-filter"):
+        for action in intent_filter.findall("action"):
+            value = action.get(android_attr("name"))
+            if value:
+                actions.add(value)
+
+        for category in intent_filter.findall("category"):
+            value = category.get(android_attr("name"))
+            if value:
+                categories.add(value)
+
+    return {
+        "actions": sorted(actions),
+        "categories": sorted(categories),
+        "is_launcher": (
+            "android.intent.action.MAIN" in actions
+            and "android.intent.category.LAUNCHER" in categories
+        ),
+    }
 
 
 def parse_manifest_components(manifest_xml: str) -> List[Dict[str, object]]:
@@ -512,6 +605,8 @@ def parse_manifest_components(manifest_xml: str) -> List[Dict[str, object]]:
             else:
                 exported = bool(intent_filters)
 
+            intent_info = extract_intent_filter_info(element)
+
             components.append(
                 {
                     "type": component_type,
@@ -520,6 +615,9 @@ def parse_manifest_components(manifest_xml: str) -> List[Dict[str, object]]:
                     "protected_by_permission": bool(permission),
                     "permission": permission or "",
                     "deep_links": extract_deep_links(element),
+                    "actions": intent_info["actions"],
+                    "categories": intent_info["categories"],
+                    "is_launcher": intent_info["is_launcher"],
                 }
             )
 
@@ -536,6 +634,42 @@ def detect_hints(decoded_strings: List[str], hints: Dict[str, Sequence[str]]) ->
     return detected
 
 
+def detect_api_string_hints(
+    decoded_strings: List[str],
+    hints: Dict[str, Sequence[str]],
+    declared_permissions: set[str],
+) -> Dict[str, List[Dict[str, object]]]:
+    permission_map = {
+        "location": {
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.ACCESS_BACKGROUND_LOCATION",
+        },
+        "contacts": {"android.permission.READ_CONTACTS", "android.permission.WRITE_CONTACTS"},
+        "device_identifier": {"android.permission.READ_PHONE_STATE", "android.permission.READ_PHONE_NUMBERS"},
+        "camera": {"android.permission.CAMERA"},
+        "audio": {"android.permission.RECORD_AUDIO"},
+    }
+    raw_hits = detect_hints(decoded_strings, hints)
+    result: Dict[str, List[Dict[str, object]]] = {}
+
+    for category, values in raw_hits.items():
+        permission_declared = bool(permission_map.get(category, set()) & declared_permissions)
+        confidence = "medium" if permission_declared else "low"
+        result[category] = [
+            {
+                "category": category,
+                "value": value,
+                "evidence_type": "string_match",
+                "confidence": confidence,
+                "permission_declared": permission_declared,
+            }
+            for value in values
+        ]
+
+    return result
+
+
 def build_json_report(
     apk_path: str,
     badging: str,
@@ -546,7 +680,12 @@ def build_json_report(
     components: List[Dict[str, object]],
 ) -> Dict[str, object]:
     permissions = [categorize_permission(permission) for permission in sorted(set(extract_permissions(badging)))]
-    sensitive_api_hints = detect_hints(decoded_strings, SENSITIVE_API_HINTS)
+    declared_permissions = {permission["name"] for permission in permissions}
+    sensitive_api_string_hints = detect_api_string_hints(
+        decoded_strings,
+        SENSITIVE_API_HINTS,
+        declared_permissions,
+    )
     network_api_hints = detect_hints(decoded_strings, NETWORK_API_HINTS)
     sdk_hints = detect_hints(decoded_strings, SDK_HINTS)
     return {
@@ -569,7 +708,7 @@ def build_json_report(
     "permissions": permissions,
     "components": components,
     "component_summary": summarize_components(components),
-    "sensitive_api_hints": sensitive_api_hints,
+    "sensitive_api_string_hints": sensitive_api_string_hints,
     "network_api_hints": network_api_hints,
     "sdk_hints": sdk_hints,
     "findings": [asdict(finding) for finding in findings],
@@ -584,7 +723,10 @@ def summarize_components(components: List[Dict[str, object]]) -> Dict[str, Dict[
         summary[key]["total"] += 1
         if item.get("exported"):
             summary[key]["exported"] += 1
-            if not item.get("protected_by_permission"):
+            if (
+                not item.get("protected_by_permission")
+                and not item.get("is_launcher")
+            ):
                 summary[key]["unprotected_exported"] += 1
     return summary
 
@@ -719,29 +861,44 @@ def analyze_static(
         )
 
     raw_data = Path(apk_path).read_bytes()
-    decoded_strings = extract_apk_strings(apk_path)
+    string_records = extract_apk_strings(apk_path)
+    decoded_strings = [record["text"] for record in string_records]
     joined_text = "\n".join(decoded_strings)
     joined_lower = joined_text.lower()
     searchable_data = raw_data + b"\n" + joined_text.encode("utf-8", errors="ignore")
 
-    for raw_url in sorted(set(URL_RE.findall(searchable_data))):
-        raw_value = safe_decode(raw_url)
-        cleaned_url = clean_url_candidate(raw_value)
+    url_findings: set[tuple[str, str]] = set()
+    for record in string_records:
+        source_file = record["source_file"]
+        source_type = classify_source_type(source_file)
+        text = record["text"]
 
-        if not cleaned_url:
-            continue
+        for match in re.findall(r"https?://[^\s\"'<>]+", text):
+            cleaned_url = clean_url_candidate(match)
 
-        host = urlparse(cleaned_url).hostname or ""
+            if not cleaned_url:
+                continue
 
-        if host.lower() in DOCUMENTATION_HOSTS:
-            continue
+            confidence = classify_url_confidence(source_file, cleaned_url)
 
-        add(
-            "url",
-            "hardcoded_url_candidate",
-            cleaned_url,
-            "APK extracted string; low-confidence",
-        )
+            if confidence == "ignore":
+                continue
+
+            key = (cleaned_url, source_file)
+            if key in url_findings:
+                continue
+            url_findings.add(key)
+
+            add(
+                "url",
+                "embedded_url_candidate",
+                cleaned_url,
+                (
+                    f"source_file={source_file} "
+                    f"source_type={source_type} "
+                    f"confidence={confidence}"
+                ),
+            )
 
     for host in extract_candidate_hosts(decoded_strings):
         add(
@@ -798,10 +955,10 @@ def analyze_static(
         SENSITIVE_API_HINTS,
     ).items():
         add(
-            "sensitive_api_hint",
+            "sensitive_api_string_hint",
             category,
             ";".join(hits),
-            "APK strings",
+            "APK strings; evidence_type=string_match",
         )
 
     for category, hits in detect_hints(

@@ -163,7 +163,7 @@ if os.path.exists(static_json_path) or os.path.exists(static_csv_path):
                 st.info("aapt badgingからコンポーネント情報を取得できませんでした。")
             st.subheader("API / SDK候補")
             st.json({
-                "sensitive_api_hints": static_report.get("sensitive_api_hints", {}),
+                "sensitive_api_string_hints": static_report.get("sensitive_api_string_hints", {}),
                 "network_api_hints": static_report.get("network_api_hints", {}),
                 "sdk_hints": static_report.get("sdk_hints", {}),
             })
