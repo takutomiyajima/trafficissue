@@ -18,13 +18,20 @@ class StaticAnalyzerTest(unittest.TestCase):
                 b"com.google.android.gms.ads.MobileAds\x00network_security_config\x00"
             )
             badging = (
-                "package: name='com.example.app' versionCode='1'\n"
+                "package: name='com.example.app' versionCode='1' versionName='1.0'\n"
+                "sdkVersion:'23'\n"
+                "targetSdkVersion:'35'\n"
+                "application-label:'Research Demo'\n"
                 "uses-permission: name='android.permission.INTERNET'\n"
                 "uses-permission: name='android.permission.ACCESS_FINE_LOCATION'\n"
             )
+            manifest_status = {"status": "success", "tool": "/tmp/aapt", "message": ""}
+            component_status = {"status": "failed", "tool": None, "message": "apkanalyzer was not found"}
 
             json_output = base / "static_analysis.json"
-            with patch("static_analyzer.aapt_badging", return_value=badging):
+            with patch("static_analyzer.aapt_badging", return_value=(badging, manifest_status)), patch(
+                "static_analyzer.get_manifest_xml", return_value=("", component_status)
+            ):
                 findings = static_analyzer.analyze_static(str(apk), str(output), str(json_output))
 
             rows = [finding.row() for finding in findings]
@@ -36,13 +43,51 @@ class StaticAnalyzerTest(unittest.TestCase):
             self.assertIn("Google Maps", flat)
             self.assertIn("AdMob", flat)
             self.assertIn("network_security_config", flat)
+            self.assertIn("Research Demo", flat)
+            self.assertIn("target_sdk", flat)
             self.assertTrue(output.exists())
             report = json.loads(json_output.read_text(encoding="utf-8"))
             self.assertEqual(report["application"]["package_name"], "com.example.app")
+            self.assertEqual(report["application"]["app_label"], "Research Demo")
+            self.assertEqual(report["application"]["min_sdk"], "23")
+            self.assertEqual(report["application"]["target_sdk"], "35")
+            self.assertEqual(report["stages"]["manifest_badging_analysis"], manifest_status)
+            self.assertEqual(report["stages"]["manifest_xml_analysis"], component_status)
             permission_by_name = {item["name"]: item for item in report["permissions"]}
             self.assertEqual(permission_by_name["android.permission.ACCESS_FINE_LOCATION"]["category"], "location")
             self.assertTrue(permission_by_name["android.permission.ACCESS_FINE_LOCATION"]["sensitive"])
             self.assertIn("admob", "\n".join(report["sdk_hints"].keys()).lower().replace(" ", "_"))
+
+    def test_parse_manifest_components_extracts_exported_permissions_and_deep_links(self):
+        manifest_xml = '''<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <activity android:name=".MainActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="demo" android:host="example.com" android:pathPrefix="/open" />
+      </intent-filter>
+    </activity>
+    <service android:name=".SyncService" android:permission="com.example.PRIVATE" />
+    <receiver android:name=".BootReceiver">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>'''
+
+        components = static_analyzer.parse_manifest_components(manifest_xml)
+
+        self.assertEqual(len(components), 3)
+        by_name = {component["name"]: component for component in components}
+        self.assertTrue(by_name[".MainActivity"]["exported"])
+        self.assertEqual(
+            by_name[".MainActivity"]["deep_links"],
+            [{"scheme": "demo", "host": "example.com", "path": "/open"}],
+        )
+        self.assertFalse(by_name[".SyncService"]["exported"])
+        self.assertTrue(by_name[".SyncService"]["protected_by_permission"])
+        self.assertTrue(by_name[".BootReceiver"]["exported"])
 
 
 if __name__ == "__main__":
