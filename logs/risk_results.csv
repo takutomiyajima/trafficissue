@@ -1,7 +1,17 @@
 event_id,app_package,ui_timestamp,screen,action,element_text,traffic_timestamp,time_delta,observability_status,metadata_source,destination_ip,destination_port,protocol,bytes_sent,bytes_received,domain,destination_party,scheme,method,url,status_code,content_type,request_size,response_size,response_timestamp,duration_ms,error,risk,risk_category,risk_rule,risk_signal,data_categories,reason
-E001,,1780631919,Home,tap,Get Ticket,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
-E002,,1780631925,Home,tap,TopTab_1,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
-E003,,1780631930,Home,tap,TopTab_2,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
-E004,,1780631935,Home,tap,TopTab_3,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
-E005,,1780631940,Home,tap,TopTab_4,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
-E006,,1780631946,Home,tap,TopTab_5,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E000,com.google.android.apps.nexuslauncher,1780825950.0,com.google.android.apps.nexuslauncher/.NexusLauncherActivity,launch,com.example.research_demo,,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E001,com.example.research_demo,1780825955.0,com.example.research_demo/.MainActivity,tap,"HTTP Test
+Plain HTTP request. Expected High if observed.
+http://example.com/?source=privacy_eval_apk&type=http",,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E002,com.example.research_demo,1780825960.0,com.example.research_demo/.MainActivity,tap,"First-party HTTPS Test
+Allowlisted HTTPS request. Expected Low if allowlist includes example.com.
+https://example.com/?source=privacy_eval_apk&type=first_party",,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E003,com.example.research_demo,1780825966.0,com.example.research_demo/.MainActivity,tap,"External HTTPS Test
+Non-allowlisted HTTPS request. Expected Middle if observed.
+https://httpbin.org/get?source=privacy_eval_apk&type=external",,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E004,com.example.research_demo,1780825971.0,com.example.research_demo/.MainActivity,tap,"External POST Test
+POST request to external domain. Expected Middle/High depending on policy.
+https://httpbin.org/post",,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。
+E005,com.example.research_demo,1780825977.0,com.example.research_demo/.MainActivity,tap,"Tracker-like HTTPS Test
+Analytics-like endpoint. Expected Middle if tracker classification is enabled.
+https://www.google-analytics.com/g/collect?v=2&tid=G-TEST000&cid=test-client&en=test_event",,,capture_failed,,,,,,,,none,,,,,,,,,,,Unknown,観測不能,no_observed_traffic,no_observed_network_in_window,,操作後5秒以内にmitmproxy/VPN/pcapで通信は観測されませんでした。通信なしとは断定せず観測不能として扱います。

@@ -1,0 +1,7 @@
+apk,package,signal_type,name,value,evidence
+/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk,com.example.research_demo,apk,sha256,2d0cb5ac83785acb2d55697d37404d81d720e457ab35b06d9cfa3f927ccc5ff1,APK file hash
+/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk,com.example.research_demo,manifest,package,com.example.research_demo,aapt dump badging
+/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk,com.example.research_demo,manifest,version_name,1.0.0,aapt dump badging
+/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk,com.example.research_demo,manifest,version_code,1,aapt dump badging
+/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk,com.example.research_demo,permission,INTERNET,android.permission.INTERNET,AndroidManifest.xml category=network sensitive=False
+/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk,com.example.research_demo,permission,DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION,com.example.research_demo.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION,AndroidManifest.xml category=other sensitive=False

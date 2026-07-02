@@ -1,0 +1,96 @@
+{
+  "analysis_status": "success",
+  "stages": {
+    "file_analysis": {
+      "status": "success"
+    },
+    "manifest_analysis": {
+      "status": "success",
+      "tool": "/Users/miyajimatakuto/Library/Android/sdk/build-tools/35.0.0/aapt",
+      "message": ""
+    },
+    "string_analysis": {
+      "status": "success"
+    }
+  },
+  "application": {
+    "apk_path": "/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk",
+    "apk_file_name": "app-debug.apk",
+    "sha256": "2d0cb5ac83785acb2d55697d37404d81d720e457ab35b06d9cfa3f927ccc5ff1",
+    "file_size_bytes": 100428589,
+    "package_name": "com.example.research_demo",
+    "version_name": "1.0.0",
+    "version_code": "1",
+    "app_label": null,
+    "min_sdk": null,
+    "target_sdk": null,
+    "debuggable": true
+  },
+  "permissions": [
+    {
+      "name": "android.permission.INTERNET",
+      "category": "network",
+      "sensitive": false
+    },
+    {
+      "name": "com.example.research_demo.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+      "category": "other",
+      "sensitive": false
+    }
+  ],
+  "components": [],
+  "component_summary": {},
+  "sensitive_api_hints": {},
+  "network_api_hints": {},
+  "sdk_hints": {},
+  "findings": [
+    {
+      "apk": "/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk",
+      "package": "com.example.research_demo",
+      "signal_type": "apk",
+      "name": "sha256",
+      "value": "2d0cb5ac83785acb2d55697d37404d81d720e457ab35b06d9cfa3f927ccc5ff1",
+      "evidence": "APK file hash"
+    },
+    {
+      "apk": "/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk",
+      "package": "com.example.research_demo",
+      "signal_type": "manifest",
+      "name": "package",
+      "value": "com.example.research_demo",
+      "evidence": "aapt dump badging"
+    },
+    {
+      "apk": "/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk",
+      "package": "com.example.research_demo",
+      "signal_type": "manifest",
+      "name": "version_name",
+      "value": "1.0.0",
+      "evidence": "aapt dump badging"
+    },
+    {
+      "apk": "/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk",
+      "package": "com.example.research_demo",
+      "signal_type": "manifest",
+      "name": "version_code",
+      "value": "1",
+      "evidence": "aapt dump badging"
+    },
+    {
+      "apk": "/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk",
+      "package": "com.example.research_demo",
+      "signal_type": "permission",
+      "name": "INTERNET",
+      "value": "android.permission.INTERNET",
+      "evidence": "AndroidManifest.xml category=network sensitive=False"
+    },
+    {
+      "apk": "/Users/miyajimatakuto/Documents/research_project/uploads/app-debug.apk",
+      "package": "com.example.research_demo",
+      "signal_type": "permission",
+      "name": "DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+      "value": "com.example.research_demo.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+      "evidence": "AndroidManifest.xml category=other sensitive=False"
+    }
+  ]
+}
