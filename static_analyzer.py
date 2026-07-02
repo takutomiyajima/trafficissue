@@ -8,6 +8,8 @@ import os
 import re
 import shutil
 import subprocess
+import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -18,6 +20,7 @@ URL_RE = re.compile(rb"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
 DOMAIN_RE = re.compile(rb"(?:[A-Za-z0-9-]+\.)+(?:com|net|org|io|jp|co|dev|app|googleapis\.com|firebaseio\.com)\b")
 BADGING_KEY_RE = re.compile(r"(\w+)='([^']*)'")
 COMPONENT_RE = re.compile(r"^(activity|service|receiver|provider)(?:-alias)?: name='([^']+)'")
+ANDROID_NS = "http://schemas.android.com/apk/res/android"
 LAUNCHABLE_RE = re.compile(r"^launchable-activity: name='([^']+)'")
 
 PERMISSION_CATEGORIES = {
@@ -148,6 +151,61 @@ def aapt_badging(apk_path: str) -> tuple[str, Dict[str, object]]:
     }
 
 
+def find_apkanalyzer() -> Optional[str]:
+    path_tool = shutil.which("apkanalyzer")
+
+    if path_tool:
+        return path_tool
+
+    sdk_candidates = [
+        os.environ.get("ANDROID_HOME"),
+        os.environ.get("ANDROID_SDK_ROOT"),
+        str(Path.home() / "Library" / "Android" / "sdk"),
+        str(Path.home() / "Android" / "Sdk"),
+    ]
+
+    for sdk_path in sdk_candidates:
+        if not sdk_path:
+            continue
+
+        sdk = Path(sdk_path)
+        candidates = list(sdk.glob("cmdline-tools/*/bin/apkanalyzer"))
+        candidates += list(sdk.glob("tools/bin/apkanalyzer"))
+        candidates = sorted(candidates, key=lambda path: str(path), reverse=True)
+
+        for candidate in candidates:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+    return None
+
+
+def get_manifest_xml(apk_path: str) -> tuple[str, Dict[str, object]]:
+    tool = find_apkanalyzer()
+
+    if not tool:
+        return "", {
+            "status": "failed",
+            "tool": None,
+            "message": "apkanalyzer was not found",
+        }
+
+    proc = run_tool([tool, "manifest", "print", apk_path])
+
+    if proc.returncode != 0:
+        return "", {
+            "status": "failed",
+            "tool": tool,
+            "message": proc.stderr.strip(),
+        }
+
+    return proc.stdout, {
+        "status": "success",
+        "tool": tool,
+        "message": "",
+    }
+
+
 def extract_package(badging: str) -> str:
     match = re.search(r"package: name='([^']+)'", badging)
     return match.group(1) if match else ""
@@ -155,6 +213,40 @@ def extract_package(badging: str) -> str:
 
 def parse_badging_keys(line: str) -> Dict[str, str]:
     return dict(BADGING_KEY_RE.findall(line))
+
+
+def extract_badging_value(badging: str, key: str) -> Optional[str]:
+    pattern = rf"^{re.escape(key)}:'([^']*)'"
+
+    for line in badging.splitlines():
+        match = re.match(pattern, line.strip())
+
+        if match:
+            return match.group(1)
+
+    return None
+
+
+def extract_application_label(badging: str) -> Optional[str]:
+    patterns = [
+        r"^application-label:'([^']*)'",
+        r"^application-label-[^:]+:'([^']*)'",
+    ]
+
+    for line in badging.splitlines():
+        stripped = line.strip()
+
+        for pattern in patterns:
+            match = re.match(pattern, stripped)
+
+            if match and match.group(1):
+                return match.group(1)
+
+    return None
+
+
+def android_attr(name: str) -> str:
+    return f"{{{ANDROID_NS}}}{name}"
 
 
 def extract_permissions(badging: str) -> Iterable[str]:
@@ -165,6 +257,46 @@ def extract_permissions(badging: str) -> Iterable[str]:
 def byte_strings(apk_path: str, min_len: int = 4) -> List[bytes]:
     data = Path(apk_path).read_bytes()
     return re.findall(rb"[ -~]{%d,}" % min_len, data)
+
+
+def extract_apk_strings(apk_path: str, min_len: int = 4) -> List[str]:
+    strings: set[str] = set()
+    target_suffixes = (
+        ".dex",
+        ".xml",
+        ".json",
+        ".js",
+        ".txt",
+        ".properties",
+        ".so",
+    )
+
+    try:
+        with zipfile.ZipFile(apk_path, "r") as apk_zip:
+            for info in apk_zip.infolist():
+                name = info.filename.lower()
+
+                if not name.endswith(target_suffixes):
+                    continue
+
+                try:
+                    data = apk_zip.read(info)
+                except (RuntimeError, OSError, KeyError, zipfile.BadZipFile):
+                    continue
+
+                for value in re.findall(rb"[ -~]{%d,}" % min_len, data):
+                    decoded = safe_decode(value)
+
+                    if decoded:
+                        strings.add(decoded)
+    except zipfile.BadZipFile:
+        for value in byte_strings(apk_path, min_len):
+            decoded = safe_decode(value)
+
+            if decoded:
+                strings.add(decoded)
+
+    return sorted(strings)
 
 
 def safe_decode(value: bytes) -> str:
@@ -178,9 +310,6 @@ def categorize_permission(permission: str) -> Dict[str, object]:
 
 def parse_application(badging: str, apk_path: str) -> Dict[str, object]:
     package_line = next((line for line in badging.splitlines() if line.startswith("package:")), "")
-    sdk_line = next((line for line in badging.splitlines() if line.startswith("sdkVersion:")), "")
-    target_line = next((line for line in badging.splitlines() if line.startswith("targetSdkVersion:")), "")
-    app_label_line = next((line for line in badging.splitlines() if line.startswith("application-label:")), "")
     package_keys = parse_badging_keys(package_line)
     return {
         "apk_path": str(Path(apk_path).resolve()),
@@ -190,9 +319,9 @@ def parse_application(badging: str, apk_path: str) -> Dict[str, object]:
         "package_name": package_keys.get("name") or None,
         "version_name": package_keys.get("versionName") or None,
         "version_code": package_keys.get("versionCode") or None,
-        "app_label": parse_badging_keys(app_label_line).get("label") or None,
-        "min_sdk": parse_badging_keys(sdk_line).get("sdkVersion") or None,
-        "target_sdk": parse_badging_keys(target_line).get("targetSdkVersion") or None,
+        "app_label": extract_application_label(badging),
+        "min_sdk": extract_badging_value(badging, "sdkVersion"),
+        "target_sdk": extract_badging_value(badging, "targetSdkVersion"),
         "debuggable": (
             "application-debuggable" in badging
             if badging
@@ -227,6 +356,87 @@ def parse_components(badging: str) -> List[Dict[str, object]]:
     return components
 
 
+def extract_deep_links(component: ET.Element) -> List[Dict[str, Optional[str]]]:
+    deep_links: List[Dict[str, Optional[str]]] = []
+
+    for intent_filter in component.findall("intent-filter"):
+        actions = {
+            action.get(android_attr("name"))
+            for action in intent_filter.findall("action")
+        }
+
+        if "android.intent.action.VIEW" not in actions:
+            continue
+
+        for data in intent_filter.findall("data"):
+            deep_links.append(
+                {
+                    "scheme": data.get(android_attr("scheme")),
+                    "host": data.get(android_attr("host")),
+                    "path": (
+                        data.get(android_attr("path"))
+                        or data.get(android_attr("pathPrefix"))
+                        or data.get(android_attr("pathPattern"))
+                    ),
+                }
+            )
+
+    return deep_links
+
+
+def parse_manifest_components(manifest_xml: str) -> List[Dict[str, object]]:
+    if not manifest_xml.strip():
+        return []
+
+    try:
+        root = ET.fromstring(manifest_xml)
+    except ET.ParseError:
+        return []
+
+    application = root.find("application")
+
+    if application is None:
+        return []
+
+    components: List[Dict[str, object]] = []
+    tag_mapping = {
+        "activity": "activity",
+        "activity-alias": "activity_alias",
+        "service": "service",
+        "receiver": "broadcast_receiver",
+        "provider": "provider",
+    }
+
+    for xml_tag, component_type in tag_mapping.items():
+        for element in application.findall(xml_tag):
+            name = element.get(android_attr("name"))
+
+            if not name:
+                continue
+
+            exported_text = element.get(android_attr("exported"))
+            permission = element.get(android_attr("permission"))
+            intent_filters = element.findall("intent-filter")
+
+            if exported_text is not None:
+                exported = exported_text.lower() == "true"
+            else:
+                exported = bool(intent_filters)
+
+            components.append(
+                {
+                    "type": component_type,
+                    "name": name,
+                    "exported": exported,
+                    "protected_by_permission": bool(permission),
+                    "permission": permission or "",
+                    "deep_links": extract_deep_links(element),
+                }
+            )
+
+    return components
+
+
 def detect_hints(decoded_strings: List[str], hints: Dict[str, Sequence[str]]) -> Dict[str, List[str]]:
     joined_lower = "\n".join(decoded_strings).lower()
     detected: Dict[str, List[str]] = {}
@@ -243,9 +453,10 @@ def build_json_report(
     findings: List[StaticFinding],
     decoded_strings: List[str],
     manifest_status: Dict[str, object],
+    component_status: Dict[str, object],
+    components: List[Dict[str, object]],
 ) -> Dict[str, object]:
     permissions = [categorize_permission(permission) for permission in sorted(set(extract_permissions(badging)))]
-    components = parse_components(badging)
     sensitive_api_hints = detect_hints(decoded_strings, SENSITIVE_API_HINTS)
     network_api_hints = detect_hints(decoded_strings, NETWORK_API_HINTS)
     sdk_hints = detect_hints(decoded_strings, SDK_HINTS)
@@ -259,7 +470,8 @@ def build_json_report(
         "file_analysis": {
             "status": "success",
         },
-        "manifest_analysis": manifest_status,
+        "manifest_badging_analysis": manifest_status,
+        "manifest_xml_analysis": component_status,
         "string_analysis": {
             "status": "success",
         },
@@ -319,6 +531,8 @@ def analyze_static(
         )
 
     badging, manifest_status = aapt_badging(apk_path)
+    manifest_xml, component_status = get_manifest_xml(apk_path)
+    components = parse_manifest_components(manifest_xml)
     package_name = extract_package(badging)
     findings: List[StaticFinding] = []
 
@@ -400,7 +614,10 @@ def analyze_static(
             ),
         )
 
-    for component in parse_components(badging):
+    if not components:
+        components = parse_components(badging)
+
+    for component in components:
         add(
             "component",
             str(component["type"]),
@@ -413,17 +630,13 @@ def analyze_static(
         )
 
     raw_data = Path(apk_path).read_bytes()
-    strings = byte_strings(apk_path)
-    decoded_strings = [
-        safe_decode(item)
-        for item in strings
-    ]
-    joined_lower = "\n".join(
-        decoded_strings
-    ).lower()
+    decoded_strings = extract_apk_strings(apk_path)
+    joined_text = "\n".join(decoded_strings)
+    joined_lower = joined_text.lower()
+    searchable_data = raw_data + b"\n" + joined_text.encode("utf-8", errors="ignore")
 
     for raw_url in sorted(
-        set(URL_RE.findall(raw_data))
+        set(URL_RE.findall(searchable_data))
     ):
         add(
             "url",
@@ -433,7 +646,7 @@ def analyze_static(
         )
 
     for raw_domain in sorted(
-        set(DOMAIN_RE.findall(raw_data))
+        set(DOMAIN_RE.findall(searchable_data))
     ):
         domain = safe_decode(
             raw_domain
@@ -537,6 +750,8 @@ def analyze_static(
             findings,
             decoded_strings,
             manifest_status,
+            component_status,
+            components,
         )
 
         json_output.write_text(
