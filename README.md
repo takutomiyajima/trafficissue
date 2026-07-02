@@ -59,3 +59,26 @@ streamlit run app.py
 - 本システムでは、未観測をLowにせず `Unknown` / `not_observed` / `capture_failed` として扱う。
 - 今後はVPN/pcap型通信取得と静的解析を組み合わせ、通信本文ではなく通信先メタデータとUI操作の対応付けを中心に進める。
 - mitmproxyは、取れた通信を詳細解析する補助として利用する。
+
+## APK静的解析MVP
+
+添付資料の「Androidアプリ公開前プライバシー確認支援システム」に対応する最小構成として、APKの静的解析レポート生成を追加しています。目的は危険アプリの断定ではなく、公開前に開発者が確認すべき候補を根拠付きで提示することです。
+
+```bash
+python static_analyzer.py path/to/app.apk \
+  --output logs/static_analysis.csv \
+  --json-output logs/static_analysis.json
+streamlit run app.py
+```
+
+静的解析では、現時点で次を抽出します。
+
+| 項目 | 内容 |
+| --- | --- |
+| APK基本情報 | SHA-256、ファイルサイズ、パッケージ名、バージョン、SDK、debuggable |
+| Manifest候補 | 権限、コンポーネント、exported / permission保護の有無 |
+| プライバシー候補 | センシティブ権限カテゴリ、位置情報・連絡先・端末IDなどのAPI文字列ヒント |
+| 通信候補 | URL、ドメイン、HTTP/WebView/Socket API文字列ヒント、network_security_config |
+| SDK候補 | Firebase、Google Ads、Google Maps等の文字列・パッケージヒント |
+
+設定ファイルは `config/` に分離しており、研究中に検出対象を増やしやすい構成にしています。軽量MVPのため、現段階ではaapt/aapt2とAPK内文字列を中心に解析します。本文送信や実行時挙動は断定せず、動的解析ログと組み合わせて確認優先度を上げる設計です。

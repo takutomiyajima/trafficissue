@@ -1,9 +1,14 @@
+import json
 import os
 import subprocess
 import sys
+import tempfile
 
 import pandas as pd
 import streamlit as st
+
+import static_analyzer
+from integration.risk_engine import score_findings
 
 
 st.set_page_config(page_title="通信ログ・危険通信チェック", layout="wide")
@@ -47,6 +52,33 @@ def overall_risk_label(df):
         return "Unknown"
     return "Low"
 
+
+
+
+st.sidebar.header("APK静的解析")
+st.sidebar.caption("APKをアップロードし、Manifest・権限・URL・SDK/API候補を根拠付きで抽出します。")
+uploaded_apk = st.sidebar.file_uploader("解析対象APK", type=["apk"])
+static_csv_path = st.sidebar.text_input("静的解析CSV", "logs/static_analysis.csv")
+static_json_path = st.sidebar.text_input("静的解析JSON", "logs/static_analysis.json")
+
+if uploaded_apk is not None and st.sidebar.button("APKを静的解析する"):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".apk") as tmp_apk:
+        tmp_apk.write(uploaded_apk.getbuffer())
+        tmp_apk_path = tmp_apk.name
+    try:
+        with st.spinner("APKを静的解析しています..."):
+            static_analyzer.analyze_static(tmp_apk_path, static_csv_path, static_json_path)
+        st.sidebar.success("静的解析が完了しました。")
+        st.cache_data.clear()
+        st.rerun()
+    except Exception as exc:
+        st.sidebar.error("静的解析に失敗しました。")
+        st.sidebar.exception(exc)
+    finally:
+        try:
+            os.unlink(tmp_apk_path)
+        except OSError:
+            pass
 
 st.sidebar.header("ログ再判定")
 st.sidebar.caption("PCAPdroid等のVPN/pcap CSVを logs/pcap_metadata.csv に正規化してから、UIログと通信観測ログを対応付けます。")
@@ -95,6 +127,64 @@ if st.sidebar.button("通信ログを判定する"):
         st.sidebar.error("判定に失敗しました。")
         st.sidebar.text_area("標準出力", result.stdout, height=160)
         st.sidebar.text_area("エラー", result.stderr, height=160)
+
+
+if os.path.exists(static_json_path) or os.path.exists(static_csv_path):
+    st.header("APK静的解析レポート")
+    if os.path.exists(static_json_path):
+        with open(static_json_path, encoding="utf-8") as f:
+            static_report = json.load(f)
+        application = static_report.get("application", {})
+        findings = static_report.get("findings", [])
+        priority = score_findings(findings)
+        app_cols = st.columns(5)
+        app_cols[0].metric("パッケージ", application.get("package_name") or "不明")
+        app_cols[1].metric("targetSdk", application.get("target_sdk") or "不明")
+        app_cols[2].metric("権限数", len(static_report.get("permissions", [])))
+        app_cols[3].metric("検出証拠数", len(findings))
+        app_cols[4].metric("確認優先度", priority["priority"])
+        st.caption("この静的解析は『送信した』とは断定せず、公開前に開発者が確認すべき候補を提示します。")
+
+        overview_tab, evidence_tab, json_tab = st.tabs(["概要", "証拠一覧", "JSON"])
+        with overview_tab:
+            st.subheader("アプリ基本情報")
+            st.json(application)
+            st.subheader("権限")
+            permissions = pd.DataFrame(static_report.get("permissions", []))
+            if not permissions.empty:
+                st.dataframe(permissions, width="stretch")
+            else:
+                st.info("権限は検出されませんでした。")
+            st.subheader("コンポーネント要約")
+            component_summary = pd.DataFrame.from_dict(static_report.get("component_summary", {}), orient="index")
+            if not component_summary.empty:
+                st.dataframe(component_summary, width="stretch")
+            else:
+                st.info("aapt badgingからコンポーネント情報を取得できませんでした。")
+            st.subheader("API / SDK候補")
+            st.json({
+                "sensitive_api_hints": static_report.get("sensitive_api_hints", {}),
+                "network_api_hints": static_report.get("network_api_hints", {}),
+                "sdk_hints": static_report.get("sdk_hints", {}),
+            })
+        with evidence_tab:
+            evidence_df = pd.DataFrame(findings)
+            if not evidence_df.empty:
+                st.dataframe(evidence_df, width="stretch")
+            else:
+                st.info("証拠は検出されませんでした。")
+        with json_tab:
+            st.download_button(
+                "JSONレポートをダウンロード",
+                data=json.dumps(static_report, ensure_ascii=False, indent=2),
+                file_name="static_analysis.json",
+                mime="application/json",
+            )
+            st.json(static_report)
+    else:
+        static_df = read_csv_if_exists(static_csv_path)
+        if static_df is not None:
+            st.dataframe(static_df, width="stretch")
 
 result_file = risk_result_path
 

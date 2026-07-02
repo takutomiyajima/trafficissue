@@ -1,0 +1,11 @@
+http:
+  - class: Lokhttp3/OkHttpClient;
+    methods: [newCall]
+  - class: Ljava/net/HttpURLConnection;
+    methods: [connect]
+webview:
+  - class: Landroid/webkit/WebView;
+    methods: [loadUrl, postUrl]
+socket:
+  - class: Ljava/net/Socket;
+    methods: [connect]

@@ -1,0 +1,9 @@
+firebase_analytics:
+  display_name: Firebase Analytics
+  category: analytics
+  package_prefixes: [com.google.firebase.analytics]
+  related_domains: [google-analytics.com, app-measurement.com]
+google_ads:
+  display_name: Google Mobile Ads
+  category: advertising
+  package_prefixes: [com.google.android.gms.ads]
