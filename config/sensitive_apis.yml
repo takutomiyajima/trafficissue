@@ -1,0 +1,14 @@
+location:
+  apis:
+    - class: Landroid/location/LocationManager;
+      methods: [getLastKnownLocation, requestLocationUpdates]
+    - class: Lcom/google/android/gms/location/FusedLocationProviderClient;
+      methods: [getLastLocation, requestLocationUpdates]
+contacts:
+  apis:
+    - class: Landroid/provider/ContactsContract;
+      methods: [query]
+device_identifier:
+  apis:
+    - class: Landroid/provider/Settings$Secure;
+      methods: [getString]

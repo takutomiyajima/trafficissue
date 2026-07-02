@@ -1,0 +1,21 @@
+location:
+  sensitive: true
+  permissions:
+    - android.permission.ACCESS_FINE_LOCATION
+    - android.permission.ACCESS_COARSE_LOCATION
+    - android.permission.ACCESS_BACKGROUND_LOCATION
+contacts:
+  sensitive: true
+  permissions:
+    - android.permission.READ_CONTACTS
+    - android.permission.WRITE_CONTACTS
+device_identifier:
+  sensitive: true
+  permissions:
+    - android.permission.READ_PHONE_STATE
+    - android.permission.READ_PHONE_NUMBERS
+network:
+  sensitive: false
+  permissions:
+    - android.permission.INTERNET
+    - android.permission.ACCESS_NETWORK_STATE

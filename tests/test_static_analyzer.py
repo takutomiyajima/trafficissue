@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,8 +23,9 @@ class StaticAnalyzerTest(unittest.TestCase):
                 "uses-permission: name='android.permission.ACCESS_FINE_LOCATION'\n"
             )
 
+            json_output = base / "static_analysis.json"
             with patch("static_analyzer.aapt_badging", return_value=badging):
-                findings = static_analyzer.analyze_static(str(apk), str(output))
+                findings = static_analyzer.analyze_static(str(apk), str(output), str(json_output))
 
             rows = [finding.row() for finding in findings]
             flat = "\n".join(",".join(row) for row in rows)
@@ -35,6 +37,12 @@ class StaticAnalyzerTest(unittest.TestCase):
             self.assertIn("AdMob", flat)
             self.assertIn("network_security_config", flat)
             self.assertTrue(output.exists())
+            report = json.loads(json_output.read_text(encoding="utf-8"))
+            self.assertEqual(report["application"]["package_name"], "com.example.app")
+            permission_by_name = {item["name"]: item for item in report["permissions"]}
+            self.assertEqual(permission_by_name["android.permission.ACCESS_FINE_LOCATION"]["category"], "location")
+            self.assertTrue(permission_by_name["android.permission.ACCESS_FINE_LOCATION"]["sensitive"])
+            self.assertIn("admob", "\n".join(report["sdk_hints"].keys()).lower().replace(" ", "_"))
 
 
 if __name__ == "__main__":
