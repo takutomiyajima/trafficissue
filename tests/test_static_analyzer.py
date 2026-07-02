@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,10 +14,12 @@ class StaticAnalyzerTest(unittest.TestCase):
             base = Path(tmp)
             apk = base / "sample.apk"
             output = base / "static_analysis.csv"
-            apk.write_bytes(
-                b"classes.dex\x00https://maps.googleapis.com/maps/api\x00"
-                b"com.google.android.gms.ads.MobileAds\x00network_security_config\x00"
-            )
+            with zipfile.ZipFile(apk, "w") as apk_zip:
+                apk_zip.writestr(
+                    "classes.dex",
+                    b"https://maps.googleapis.com/maps/api\x00"
+                    b"com.google.android.gms.ads.MobileAds\x00network_security_config\x00",
+                )
             badging = (
                 "package: name='com.example.app' versionCode='1' versionName='1.0'\n"
                 "sdkVersion:'23'\n"
@@ -40,6 +43,8 @@ class StaticAnalyzerTest(unittest.TestCase):
             self.assertIn("android.permission.INTERNET", flat)
             self.assertIn("android.permission.ACCESS_FINE_LOCATION", flat)
             self.assertIn("https://maps.googleapis.com/maps/api", flat)
+            self.assertIn("source_file=classes.dex", flat)
+            self.assertIn("confidence=low", flat)
             self.assertIn("Google Maps", flat)
             self.assertIn("AdMob", flat)
             self.assertIn("network_security_config", flat)
@@ -57,11 +62,17 @@ class StaticAnalyzerTest(unittest.TestCase):
             self.assertEqual(permission_by_name["android.permission.ACCESS_FINE_LOCATION"]["category"], "location")
             self.assertTrue(permission_by_name["android.permission.ACCESS_FINE_LOCATION"]["sensitive"])
             self.assertIn("admob", "\n".join(report["sdk_hints"].keys()).lower().replace(" ", "_"))
+            self.assertNotIn("sensitive_api_hints", report)
+            self.assertIn("sensitive_api_string_hints", report)
 
     def test_parse_manifest_components_extracts_exported_permissions_and_deep_links(self):
         manifest_xml = '''<manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <application>
     <activity android:name=".MainActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
       <intent-filter>
         <action android:name="android.intent.action.VIEW" />
         <data android:scheme="demo" android:host="example.com" android:pathPrefix="/open" />
@@ -81,6 +92,9 @@ class StaticAnalyzerTest(unittest.TestCase):
         self.assertEqual(len(components), 3)
         by_name = {component["name"]: component for component in components}
         self.assertTrue(by_name[".MainActivity"]["exported"])
+        self.assertTrue(by_name[".MainActivity"]["is_launcher"])
+        self.assertIn("android.intent.action.MAIN", by_name[".MainActivity"]["actions"])
+        self.assertIn("android.intent.category.LAUNCHER", by_name[".MainActivity"]["categories"])
         self.assertEqual(
             by_name[".MainActivity"]["deep_links"],
             [{"scheme": "demo", "host": "example.com", "path": "/open"}],
@@ -88,6 +102,10 @@ class StaticAnalyzerTest(unittest.TestCase):
         self.assertFalse(by_name[".SyncService"]["exported"])
         self.assertTrue(by_name[".SyncService"]["protected_by_permission"])
         self.assertTrue(by_name[".BootReceiver"]["exported"])
+
+        summary = static_analyzer.summarize_components(components)
+        self.assertEqual(summary["activity"]["exported"], 1)
+        self.assertEqual(summary["activity"]["unprotected_exported"], 0)
 
     def test_find_apkanalyzer_prefers_cmdline_tools_and_ignores_legacy_tools(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,8 +143,8 @@ class StaticAnalyzerTest(unittest.TestCase):
 
     def test_clean_url_and_host_extraction_filters_noise_and_documentation(self):
         self.assertEqual(
-            static_analyzer.clean_url_candidate("https://api.example.com/path);"),
-            "https://api.example.com/path",
+            static_analyzer.clean_url_candidate("https://api.myapp.test/path);"),
+            "https://api.myapp.test/path",
         )
         self.assertIsNone(static_analyzer.clean_url_candidate("http://a"))
         self.assertIsNone(static_analyzer.clean_url_candidate("http://localhost:8080"))
@@ -134,14 +152,14 @@ class StaticAnalyzerTest(unittest.TestCase):
         hosts = static_analyzer.extract_candidate_hosts(
             [
                 "docs https://dart.dev/tools and https://api.flutter.dev/widgets",
-                "runtime https://api.example.com/v1 and http://127.0.0.1:1234",
+                "runtime https://api.myapp.test/v1 and http://127.0.0.1:1234",
                 "analytics https://firebaseinstallations.googleapis.com/project",
             ]
         )
 
         self.assertEqual(
             hosts,
-            ["api.example.com", "firebaseinstallations.googleapis.com"],
+            ["api.myapp.test", "firebaseinstallations.googleapis.com"],
         )
 
 
