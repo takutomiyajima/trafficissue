@@ -89,6 +89,61 @@ class StaticAnalyzerTest(unittest.TestCase):
         self.assertTrue(by_name[".SyncService"]["protected_by_permission"])
         self.assertTrue(by_name[".BootReceiver"]["exported"])
 
+    def test_find_apkanalyzer_prefers_cmdline_tools_and_ignores_legacy_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sdk = Path(tmp)
+            latest = sdk / "cmdline-tools" / "latest" / "bin" / "apkanalyzer"
+            versioned = sdk / "cmdline-tools" / "12.0" / "bin" / "apkanalyzer"
+            legacy = sdk / "tools" / "bin" / "apkanalyzer"
+
+            for candidate in (latest, versioned, legacy):
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                candidate.write_text("#!/bin/sh\n", encoding="utf-8")
+                candidate.chmod(0o755)
+
+            with patch("static_analyzer.shutil.which", return_value=None), patch.dict(
+                "static_analyzer.os.environ",
+                {"ANDROID_HOME": str(sdk), "ANDROID_SDK_ROOT": ""},
+            ), patch("static_analyzer.Path.home", return_value=Path("/unused")):
+                self.assertEqual(static_analyzer.find_apkanalyzer(), str(latest))
+
+            latest.unlink()
+
+            with patch("static_analyzer.shutil.which", return_value=None), patch.dict(
+                "static_analyzer.os.environ",
+                {"ANDROID_HOME": str(sdk), "ANDROID_SDK_ROOT": ""},
+            ), patch("static_analyzer.Path.home", return_value=Path("/unused")):
+                self.assertEqual(static_analyzer.find_apkanalyzer(), str(versioned))
+
+            versioned.unlink()
+
+            with patch("static_analyzer.shutil.which", return_value=None), patch.dict(
+                "static_analyzer.os.environ",
+                {"ANDROID_HOME": str(sdk), "ANDROID_SDK_ROOT": ""},
+            ), patch("static_analyzer.Path.home", return_value=Path("/unused")):
+                self.assertIsNone(static_analyzer.find_apkanalyzer())
+
+    def test_clean_url_and_host_extraction_filters_noise_and_documentation(self):
+        self.assertEqual(
+            static_analyzer.clean_url_candidate("https://api.example.com/path);"),
+            "https://api.example.com/path",
+        )
+        self.assertIsNone(static_analyzer.clean_url_candidate("http://a"))
+        self.assertIsNone(static_analyzer.clean_url_candidate("http://localhost:8080"))
+
+        hosts = static_analyzer.extract_candidate_hosts(
+            [
+                "docs https://dart.dev/tools and https://api.flutter.dev/widgets",
+                "runtime https://api.example.com/v1 and http://127.0.0.1:1234",
+                "analytics https://firebaseinstallations.googleapis.com/project",
+            ]
+        )
+
+        self.assertEqual(
+            hosts,
+            ["api.example.com", "firebaseinstallations.googleapis.com"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
