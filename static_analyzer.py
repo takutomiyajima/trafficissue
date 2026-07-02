@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -64,6 +65,80 @@ SDK_HINTS = {
     "AppsFlyer": ("appsflyer.com", "com.appsflyer"),
 }
 
+
+DOCUMENTATION_HOSTS = {
+    "dart.dev",
+    "api.flutter.dev",
+    "docs.flutter.dev",
+    "dartbug.com",
+    "developer.android.com",
+    "developer.apple.com",
+    "developer.mozilla.org",
+    "docs.microsoft.com",
+    "tools.ietf.org",
+    "www.w3.org",
+    "www.w3c.org",
+    "www.iana.org",
+    "www.unicode.org",
+    "en.wikipedia.org",
+    "github.com",
+    "chromium.googlesource.com",
+    "android.googlesource.com",
+}
+
+
+def clean_url_candidate(value: str) -> Optional[str]:
+    value = value.strip()
+    value = value.rstrip("');,:")
+
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    if not parsed.hostname:
+        return None
+
+    hostname = parsed.hostname.lower()
+
+    if hostname in {"localhost", "127.0.0.1"}:
+        return None
+
+    if "." not in hostname:
+        return None
+
+    if len(hostname) < 4:
+        return None
+
+    return value
+
+
+def extract_candidate_hosts(decoded_strings: List[str]) -> List[str]:
+    hosts: set[str] = set()
+
+    for text in decoded_strings:
+        for match in re.findall(r"https?://[^\s\"'<>]+", text):
+            cleaned_url = clean_url_candidate(match)
+
+            if not cleaned_url:
+                continue
+
+            host = urlparse(cleaned_url).hostname
+
+            if not host:
+                continue
+
+            host = host.lower()
+
+            if host in DOCUMENTATION_HOSTS:
+                continue
+
+            hosts.add(host)
+
+    return sorted(hosts)
 
 @dataclass(frozen=True)
 class StaticFinding:
@@ -169,12 +244,26 @@ def find_apkanalyzer() -> Optional[str]:
             continue
 
         sdk = Path(sdk_path)
-        candidates = list(sdk.glob("cmdline-tools/*/bin/apkanalyzer"))
-        candidates += list(sdk.glob("tools/bin/apkanalyzer"))
-        candidates = sorted(candidates, key=lambda path: str(path), reverse=True)
+        preferred_candidates = [
+            sdk / "cmdline-tools" / "latest" / "bin" / "apkanalyzer",
+        ]
 
-        for candidate in candidates:
+        for candidate in preferred_candidates:
             if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        versioned_candidates = sorted(
+            sdk.glob("cmdline-tools/*/bin/apkanalyzer"),
+            key=lambda path: path.parent.parent.name,
+            reverse=True,
+        )
+
+        for candidate in versioned_candidates:
+            if (
+                candidate.exists()
+                and os.access(candidate, os.X_OK)
+                and "latest" not in str(candidate)
+            ):
                 return str(candidate)
 
     return None
@@ -635,14 +724,31 @@ def analyze_static(
     joined_lower = joined_text.lower()
     searchable_data = raw_data + b"\n" + joined_text.encode("utf-8", errors="ignore")
 
-    for raw_url in sorted(
-        set(URL_RE.findall(searchable_data))
-    ):
+    for raw_url in sorted(set(URL_RE.findall(searchable_data))):
+        raw_value = safe_decode(raw_url)
+        cleaned_url = clean_url_candidate(raw_value)
+
+        if not cleaned_url:
+            continue
+
+        host = urlparse(cleaned_url).hostname or ""
+
+        if host.lower() in DOCUMENTATION_HOSTS:
+            continue
+
         add(
             "url",
-            "hardcoded_url",
-            safe_decode(raw_url),
-            "APK string table / byte strings",
+            "hardcoded_url_candidate",
+            cleaned_url,
+            "APK extracted string; low-confidence",
+        )
+
+    for host in extract_candidate_hosts(decoded_strings):
+        add(
+            "domain",
+            "embedded_host_candidate",
+            host,
+            "Extracted from APK member strings; low-confidence",
         )
 
     for raw_domain in sorted(
