@@ -12,3 +12,15 @@ device_identifier:
   apis:
     - class: Landroid/provider/Settings$Secure;
       methods: [getString]
+    - class: Landroid/telephony/TelephonyManager;
+      methods: [getDeviceId, getImei]
+camera:
+  apis:
+    - class: Landroid/hardware/camera2/CameraManager;
+      methods: [openCamera]
+audio:
+  apis:
+    - class: Landroid/media/MediaRecorder;
+      methods: [start]
+    - class: Landroid/media/AudioRecord;
+      methods: [startRecording]

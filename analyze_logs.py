@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import sys
 from typing import List, Optional, Sequence
 from urllib.parse import urlparse
+
+from integration.dynamic_report import build_integrated_report, write_integrated_report
 
 from risk_rules import (
     RuleResult,
@@ -48,6 +52,9 @@ RESULT_COLUMNS = [
     "risk_signal",
     "data_categories",
     "reason",
+    "static_match",
+    "static_evidence",
+    "static_app_data_categories",
 ]
 
 
@@ -55,6 +62,7 @@ DEFAULT_UI_PATH = "logs/ui_events.csv"
 DEFAULT_TRAFFIC_PATH = "logs/traffic_logs.csv"
 DEFAULT_OUTPUT_PATH = "logs/risk_results.csv"
 DEFAULT_METADATA_PATH = "logs/pcap_metadata.csv"
+DEFAULT_INTEGRATED_OUTPUT_PATH = "logs/integrated_analysis.json"
 DEFAULT_WINDOW_SECONDS = 5.0
 DEFAULT_ALLOWED_DOMAINS = ("example.com", "api.example.com")
 SYSTEM_CONNECTIVITY_CHECK_DOMAINS = (
@@ -95,11 +103,68 @@ METADATA_ONLY_CATEGORY = "通信メタデータのみ"
 METADATA_ONLY_REASON = "VPN/pcap由来の通信メタデータは観測されましたが、HTTP本文は読めません。"
 
 
+class StaticHandoffLoadError(ValueError):
+    """Failure to load static context, including file and validation stage."""
+
+    def __init__(self, stage: str, report_path: str, cause: BaseException | str):
+        self.stage = stage
+        self.report_path = report_path
+        self.cause = cause
+        super().__init__(f"static handoff failed at {stage} for {report_path}: {cause}")
+
+
 def _clean(value: object) -> str:
     """Return a normalized string for CSV cells that may be NaN/None."""
     if value is None or value != value:
         return ""
     return str(value).strip()
+
+
+def load_static_handoff(report_path: str) -> dict:
+    """Load the versioned static-to-dynamic handoff from a static JSON report."""
+    if not report_path:
+        return {}
+    try:
+        with open(report_path, encoding="utf-8") as file:
+            report = json.load(file)
+    except OSError as exc:
+        raise StaticHandoffLoadError("file_read", report_path, exc) from exc
+    except json.JSONDecodeError as exc:
+        detail = f"line {exc.lineno}, column {exc.colno}: {exc.msg}"
+        raise StaticHandoffLoadError("json_parse", report_path, detail) from exc
+    handoff = report.get("dynamic_analysis_handoff")
+    if not isinstance(handoff, dict):
+        raise StaticHandoffLoadError(
+            "schema_validation", report_path, "dynamic_analysis_handoff is missing or is not an object"
+        )
+    if handoff.get("schema_version") != "1.0":
+        raise StaticHandoffLoadError(
+            "schema_validation",
+            report_path,
+            f"unsupported schema_version={handoff.get('schema_version')!r}; expected '1.0'",
+        )
+    return handoff
+
+
+def static_context_for_destination(domain: str, handoff: dict) -> dict:
+    """Match an observed host to the domain candidates found in the APK."""
+    normalized = _clean(domain).lower().rstrip(".")
+    evidence: set[str] = set()
+    for item in handoff.get("expected_domains", []):
+        if not isinstance(item, dict):
+            continue
+        candidate = _clean(item.get("domain")).lower().rstrip(".")
+        if candidate and normalized and (
+            normalized == candidate or normalized.endswith("." + candidate)
+        ):
+            evidence.update(str(value) for value in item.get("static_evidence", []))
+    return {
+        "static_match": bool(evidence),
+        "static_evidence": ";".join(sorted(evidence)),
+        # These categories describe app-level capability, not data proven sent
+        # to this destination. Keep that distinction explicit in the column name.
+        "static_app_data_categories": ";".join(handoff.get("sensitive_data_categories", [])),
+    }
 
 
 def extract_app_package(screen: str) -> str:
@@ -388,10 +453,13 @@ def analyze(
     include_system_probes: bool = False,
     target_package: str = "",
     metadata_path: str = "",
+    static_report_path: str = "",
+    integrated_output_path: str = "",
 ):
     import pandas as pd
 
     allowed_domains = tuple(allowed_domains or DEFAULT_ALLOWED_DOMAINS)
+    static_handoff = load_static_handoff(static_report_path)
 
     if not os.path.exists(traffic_path):
         raise FileNotFoundError("Traffic log not found. Please run capture first.")
@@ -427,7 +495,7 @@ def analyze(
         traffic_df = traffic_df[~system_probe_mask].copy()
         traffic_df = _ensure_columns(traffic_df, TRAFFIC_COLUMNS)
 
-    target_package = _clean(target_package)
+    target_package = _clean(target_package) or _clean(static_handoff.get("package_name"))
     if target_package and not ui_df.empty:
         package_mask = ui_df["screen"].map(lambda value: extract_app_package(_clean(value)) in {"", target_package})
         ui_df = ui_df[package_mask].copy()
@@ -576,10 +644,19 @@ def analyze(
                 }
             )
 
+    for result in results:
+        result.update(static_context_for_destination(result.get("domain", ""), static_handoff))
     res_df = pd.DataFrame(results, columns=RESULT_COLUMNS)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     res_df.to_csv(output_path, index=False)
     print(f"[Analyzer] Analysis complete. Saved to {output_path}")
+    if integrated_output_path:
+        integrated_report = build_integrated_report(
+            res_df.to_dict(orient="records"),
+            static_handoff,
+        )
+        write_integrated_report(integrated_report, integrated_output_path)
+        print(f"[Analyzer] Integrated report saved to {integrated_output_path}")
     return res_df
 
 
@@ -597,6 +674,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-package", default="", help="Only correlate UI/metadata rows belonging to this Android package.")
     parser.add_argument("--metadata-log", default="", help="Optional VPN/pcap metadata CSV, for example PCAPdroid export normalized to pcap_metadata.csv.")
+    parser.add_argument("--static-report", default="", help="Optional static_analysis.json used to enrich dynamic results.")
+    parser.add_argument(
+        "--integrated-output",
+        default=DEFAULT_INTEGRATED_OUTPUT_PATH,
+        help="Path to write the evidence-oriented static/dynamic JSON report.",
+    )
     parser.add_argument(
         "--include-system-probes",
         action="store_true",
@@ -617,6 +700,15 @@ if __name__ == "__main__":
             include_system_probes=args.include_system_probes,
             target_package=args.target_package,
             metadata_path=args.metadata_log,
+            static_report_path=args.static_report,
+            integrated_output_path=args.integrated_output,
         )
     except FileNotFoundError as exc:
         print(f"[Error] {exc}")
+    except StaticHandoffLoadError as exc:
+        print(
+            f"[Analyzer][ERROR] stage={exc.stage} static_report={exc.report_path}",
+            file=sys.stderr,
+        )
+        print(f"[Analyzer][ERROR] cause={exc.cause}", file=sys.stderr)
+        raise SystemExit(1)
