@@ -20,6 +20,7 @@ TRAFFIC_LOG_COLUMNS = [
     "response_size",
     "response_timestamp",
     "duration_ms",
+    "capture_detail",
     "error",
 ]
 
@@ -59,6 +60,7 @@ class TrafficLogger:
         request_timestamp: object = None,
         response_timestamp: object = "",
         duration_ms: object = "",
+        capture_detail: str = "http_request",
         error: str = "",
         scheme: str = "",
         url: str = "",
@@ -78,6 +80,7 @@ class TrafficLogger:
             len(response_body),
             response_timestamp,
             duration_ms,
+            capture_detail,
             error,
         ]
 
@@ -142,7 +145,7 @@ class TrafficLogger:
             status_code=status_code,
             scheme="https",
             url=url,
-            error="https_connect_tunnel",
+            capture_detail="https_connect_tunnel",
         )
         self._append_row(self._request_rows[key])
 
@@ -176,6 +179,7 @@ class TrafficLogger:
             request_timestamp=request_row[0] if request_row is not None else None,
             response_timestamp=response_timestamp,
             duration_ms=duration_ms,
+            capture_detail="transport_error",
             error=message,
         )
         if request_row is None or not self._replace_row(request_row, row):

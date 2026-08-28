@@ -45,7 +45,10 @@ RESULT_COLUMNS = [
     "response_size",
     "response_timestamp",
     "duration_ms",
+    "capture_detail",
     "error",
+    "traffic_owner",
+    "owner_confidence",
     "risk",
     "risk_category",
     "risk_rule",
@@ -83,6 +86,7 @@ TRAFFIC_COLUMNS = [
     "response_size",
     "response_timestamp",
     "duration_ms",
+    "capture_detail",
     "error",
 ]
 UI_COLUMNS = ["event_id", "timestamp", "screen", "action", "element_text"]
@@ -195,6 +199,8 @@ def observability_status_for_decision(decision: RuleResult) -> str:
         return "unreadable_tls"
     if decision.rule_id == "metadata_only":
         return "metadata_only"
+    if decision.rule_id == "https_tunnel_only":
+        return "tunnel_only"
     return "observed"
 
 
@@ -234,6 +240,7 @@ def classify_risk(
     method: str = "",
     request_size: object = "",
     error: object = "",
+    capture_detail: object = "",
 ) -> RuleResult:
     """Classify privacy risk with the focused MVP rule set."""
     return evaluate_traffic_risk(
@@ -247,6 +254,7 @@ def classify_risk(
         method=method,
         request_size=request_size,
         error=error,
+        capture_detail=capture_detail,
     )
 
 
@@ -317,6 +325,8 @@ def _empty_metadata_fields() -> dict:
         "protocol": "",
         "bytes_sent": "",
         "bytes_received": "",
+        "traffic_owner": "unknown",
+        "owner_confidence": "unknown",
     }
 
 
@@ -386,7 +396,10 @@ def build_result_for_metadata_row(
         "response_size": "",
         "response_timestamp": "",
         "duration_ms": "",
+        "capture_detail": "pcap_metadata",
         "error": "",
+        "traffic_owner": _clean(metadata_row.get("package")) or "unknown",
+        "owner_confidence": "high" if _clean(metadata_row.get("package")) else "unknown",
         "risk": decision.severity,
         "risk_category": decision.category,
         "risk_rule": decision.rule_id,
@@ -412,6 +425,7 @@ def build_result_for_traffic_row(traffic_row, allowed_domains: Sequence[str], ev
         method=traffic_row.get("method"),
         request_size=traffic_row.get("request_size"),
         error=traffic_row.get("error"),
+        capture_detail=traffic_row.get("capture_detail"),
     )
     return {
         "event_id": event_id,
@@ -435,7 +449,11 @@ def build_result_for_traffic_row(traffic_row, allowed_domains: Sequence[str], ev
         "response_size": _clean(traffic_row.get("response_size")),
         "response_timestamp": _clean(traffic_row.get("response_timestamp")),
         "duration_ms": _clean(traffic_row.get("duration_ms")),
-        "error": _clean(traffic_row.get("error")),
+        "capture_detail": (
+            _clean(traffic_row.get("capture_detail"))
+            or ("https_connect_tunnel" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else "")
+        ),
+        "error": "" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else _clean(traffic_row.get("error")),
         "risk": decision.severity,
         "risk_category": decision.category,
         "risk_rule": decision.rule_id,
@@ -577,7 +595,10 @@ def analyze(
                     "response_size": "",
                     "response_timestamp": "",
                     "duration_ms": "",
+                    "capture_detail": "no_matching_traffic",
                     "error": "",
+                    "traffic_owner": "unknown",
+                    "owner_confidence": "unknown",
                     "risk": "Unknown",
                     "risk_category": "観測不能",
                     "risk_rule": "no_observed_traffic",
@@ -609,6 +630,7 @@ def analyze(
                 method=traffic_row.get("method"),
                 request_size=traffic_row.get("request_size"),
                 error=traffic_row.get("error"),
+                capture_detail=traffic_row.get("capture_detail"),
             )
 
             results.append(
@@ -634,7 +656,11 @@ def analyze(
                     "response_size": _clean(traffic_row.get("response_size")),
                     "response_timestamp": _clean(traffic_row.get("response_timestamp")),
                     "duration_ms": _clean(traffic_row.get("duration_ms")),
-                    "error": _clean(traffic_row.get("error")),
+                    "capture_detail": (
+                        _clean(traffic_row.get("capture_detail"))
+                        or ("https_connect_tunnel" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else "")
+                    ),
+                    "error": "" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else _clean(traffic_row.get("error")),
                     "risk": decision.severity,
                     "risk_category": decision.category,
                     "risk_rule": decision.rule_id,

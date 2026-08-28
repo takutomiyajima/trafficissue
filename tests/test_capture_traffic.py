@@ -1,4 +1,5 @@
 import importlib
+import csv
 import sys
 import tempfile
 import types
@@ -155,7 +156,10 @@ class CaptureTrafficTest(unittest.TestCase):
                     "https,secure.example.com,CONNECT,https://secure.example.com:443,0",
                     rows[1],
                 )
-                self.assertIn("https_connect_tunnel", rows[1])
+                with csv_path.open(encoding="utf-8", newline="") as file:
+                    tunnel = list(csv.DictReader(file))[0]
+                self.assertEqual(tunnel["capture_detail"], "https_connect_tunnel")
+                self.assertEqual(tunnel["error"], "")
 
     def test_request_replaces_connect_tunnel_row_when_https_is_intercepted(self):
         with fake_capture_traffic_module() as capture_traffic:

@@ -2,6 +2,8 @@
 
 UI操作ログと通信観測ログを時刻で対応付け、Androidアプリの「どの操作の後に、どの通信先が、どの程度観測できたか」を整理するためのMVPです。
 
+セットアップ、一括解析、個別実行、出力の読み方、トラブルシューティングを含む詳細な手順は、[`docs/usage_guide.md`](docs/usage_guide.md)を参照してください。
+
 ## 研究方針
 
 この版では、mitmproxy regular modeを全通信取得の主役にしません。一般APKではOSプロキシを使わない通信、証明書信頼の問題、証明書ピンニング、HTTP/3/QUICなどにより、HTTPプロキシだけではアプリ内通信が観測できないことがあります。
@@ -16,6 +18,8 @@ UI操作ログと通信観測ログを時刻で対応付け、Androidアプリ�
 | 静的解析 | 権限・URL・SDK候補を補助的に確認 | `logs/static_analysis.csv` |
 
 重要な前提として、通信が見えないイベントは「安全」ではありません。`not_observed` / `capture_failed` として `Unknown` にし、Lowには落としません。
+
+HTTPS CONNECT先だけを取得した場合は`error`ではなく`tunnel_only`として扱います。また、mitmproxy単独では通信元packageを特定できないため`traffic_owner=unknown`とし、PCAPdroid等のpackage/UID情報がある場合だけ強い帰属根拠として使用します。
 
 ## 最短の実験手順
 

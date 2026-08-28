@@ -196,6 +196,24 @@ def log_launch_event(filepath: str, screen: str, package_name: str) -> int:
     return write_ui_event(filepath, "E000", screen, "launch", package_name)
 
 
+def wait_until_foreground(
+    d: Any,
+    package_name: str,
+    timeout_seconds: float = 10.0,
+    poll_seconds: float = 0.25,
+) -> bool:
+    """Wait for app_start to leave the launcher before recording E000."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            if d.app_current().get("package") == package_name:
+                return True
+        except Exception:
+            pass
+        time.sleep(poll_seconds)
+    return False
+
+
 def auto_explore(
     d: Any,
     package_name: str,
@@ -205,6 +223,8 @@ def auto_explore(
 ) -> None:
     print(f"[UI] Starting app: {package_name}")
     d.app_start(package_name)
+    if not wait_until_foreground(d, package_name, timeout_seconds=max(wait_seconds, 5)):
+        print(f"[UI][WARN] {package_name} did not become foreground before launch logging.")
     launch_screen = screen_name(d, package_name)
     launch_timestamp = log_launch_event(filepath, launch_screen, package_name)
     print(f"[UI] E000: launched {package_name} on {launch_screen} at {launch_timestamp}")

@@ -31,6 +31,24 @@ class FakeDevice:
 
 
 class AutoRunnerTest(unittest.TestCase):
+    def test_wait_until_foreground_waits_past_launcher(self):
+        device = FakeDevice()
+        states = iter(
+            [
+                {"package": "com.google.android.apps.nexuslauncher"},
+                {"package": "com.example"},
+            ]
+        )
+        device.app_current = lambda: next(states)
+        with patch("auto_runner.time.sleep"):
+            self.assertTrue(
+                auto_runner.wait_until_foreground(
+                    device,
+                    "com.example",
+                    timeout_seconds=1,
+                )
+            )
+
     def test_auto_explore_finishes_when_current_screen_has_no_new_clickables(self):
         device = FakeDevice()
         with patch("auto_runner.time.sleep"), patch("auto_runner.log_launch_event", return_value=100), patch("auto_runner.log_event", return_value=123):
@@ -42,7 +60,7 @@ class AutoRunnerTest(unittest.TestCase):
     def test_auto_explore_skips_external_package_before_logging_tap(self):
         device = FakeDevice()
         device.current = {"package": "com.android.settings", "activity": ".Settings"}
-        with patch("auto_runner.time.sleep"), patch("auto_runner.log_launch_event", return_value=100), patch("auto_runner.log_event", return_value=123) as mock_log:
+        with patch("auto_runner.time.sleep"), patch("auto_runner.wait_until_foreground", return_value=False), patch("auto_runner.log_launch_event", return_value=100), patch("auto_runner.log_event", return_value=123) as mock_log:
             def restore_target(key):
                 device.pressed.append(key)
                 device.current = {"package": "com.example", "activity": ".MainActivity"}
