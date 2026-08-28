@@ -32,7 +32,7 @@
 | 16 | プライバシーポリシーとの整合性 | **対象外・未対応** | 実装なし。 | 将来実装しても自動的な法的適合判定は避ける。ポリシーから抽出した「記載候補」と実測カテゴリ・宛先の差分を、レビュー支援として提示する。 |
 | 17 | 地域・法制度で基準が変わる | **対象外・未対応** | 実装なし。 | 現行のHigh/Medium/Lowを法的判断と呼ばない。法域別チェックリストを独立した設定として追加する場合は、版、施行日、根拠資料、専門家レビューを必須にする。 |
 | 18 | Androidバージョンで結果が変わる | **一部対応** | APKのminSdk/targetSdkを静的レポートへ保存する。 | 実験端末のAndroid API level、権限付与状態、WebView/Play Services版を結果に保存していない。run metadataへ追加し、異なるAPI levelで同一シナリオを反復する。 |
-| 19 | テスト環境特有の通信が混ざる | **一部対応** | Android connectivity checkを既定で除外でき、pcapメタデータはtarget packageで絞り込める。package情報がないmitmproxy行は`traffic_owner=unknown`として断定を避ける。 | mitmproxy HTTP行はUID/PID帰属を持たない。VPNキャプチャのpackage/UIDを主たる帰属根拠にし、OS・Play Services・probe除外を設定化する。除外件数も監査用に残す。 |
+| 19 | テスト環境特有の通信が混ざる | **一部対応** | Android connectivity checkを既定で除外でき、pcapメタデータはtarget packageで絞り込める。 | mitmproxy HTTP行はUID/PID帰属を持たない。VPNキャプチャのpackage/UIDを主たる帰属根拠にし、OS・Play Services・probe除外を設定化する。除外件数も監査用に残す。 |
 | 20 | サーバ側の問題を検出できない | **対象外** | クライアントから観測できる通信方式、宛先、応答エラー等のみを評価する。 | 保存時暗号化、アクセス制御、保持期間、内部共有は判断できない。サーバ診断や法的適合性とは明確にスコープを分離し、必要なら別のレビュー結果を参照する。 |
 
 ## 優先して改善すべき順序

@@ -107,28 +107,6 @@ class DynamicReportTest(unittest.TestCase):
         self.assertEqual(by_category["個人情報らしいキー"]["status"], "Supported")
         self.assertEqual(by_category["contacts"]["status"], "Potential")
 
-    def test_tunnel_or_unattributed_traffic_remains_unverified(self):
-        report = build_integrated_report(
-            [
-                {
-                    "event_id": "E001",
-                    "observability_status": "tunnel_only",
-                    "capture_detail": "https_connect_tunnel",
-                    "traffic_owner": "unknown",
-                    "owner_confidence": "unknown",
-                    "domain": "firestore.googleapis.com",
-                    "risk": "Unknown",
-                    "risk_category": "HTTPSトンネルのみ観測",
-                    "risk_rule": "https_tunnel_only",
-                }
-            ],
-            {},
-            {"overall": "partial", "connect_tunnels_observed": 1},
-        )
-
-        self.assertEqual(report["findings"][0]["status"], "Unverified")
-        self.assertEqual(report["capture_health"]["overall"], "partial")
-
 
 if __name__ == "__main__":
     unittest.main()

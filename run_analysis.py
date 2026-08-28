@@ -548,7 +548,6 @@ def main() -> int:
             else ""
         ),
         integrated_output_path=str(Path(args.log_dir).resolve() / "integrated_analysis.json"),
-        capture_health=capture_health,
     )
     print(f"[DONE] Results are available in {risk_results_path}")
     return 0

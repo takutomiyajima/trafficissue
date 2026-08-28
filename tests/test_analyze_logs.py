@@ -5,8 +5,6 @@ from pathlib import Path
 
 from analyze_logs import (
     analyze,
-    build_result_for_traffic_row,
-    build_result_for_metadata_row,
     classify_risk,
     detect_sensitive_url_fields,
     is_system_connectivity_probe,
@@ -55,56 +53,10 @@ class AnalyzeLogsTest(unittest.TestCase):
             )
             loaded = load_static_handoff(str(path))
 
-        context = static_context_for_destination("api.example.net", loaded, "location")
+        context = static_context_for_destination("api.example.net", loaded)
         self.assertTrue(context["static_match"])
         self.assertEqual(context["static_evidence"], "embedded_url_candidate")
-        self.assertEqual(context["matched_static_data_categories"], "location")
-
-    def test_https_connect_tunnel_is_unknown_not_connection_error(self):
-        decision = classify_risk(
-            "https",
-            "secure.example.com",
-            method="CONNECT",
-            capture_detail="https_connect_tunnel",
-        )
-        self.assertEqual(decision.rule_id, "https_tunnel_only")
-        self.assertEqual(decision.severity, "Unknown")
-
-        row = build_result_for_traffic_row(
-            {
-                "timestamp": "101",
-                "scheme": "https",
-                "domain": "secure.example.com",
-                "method": "CONNECT",
-                "url": "https://secure.example.com:443",
-                "capture_detail": "https_connect_tunnel",
-                "error": "",
-            },
-            ("example.com",),
-            "E001",
-        )
-        self.assertEqual(row["observability_status"], "tunnel_only")
-        self.assertEqual(row["risk_rule"], "https_tunnel_only")
-        self.assertEqual(row["traffic_owner"], "unknown")
-
-    def test_pcap_package_is_high_confidence_traffic_owner(self):
-        row = build_result_for_metadata_row(
-            {
-                "timestamp": "101",
-                "package": "com.example.app",
-                "destination_host": "api.example.com",
-                "destination_ip": "203.0.113.10",
-                "destination_port": "443",
-                "protocol": "TCP",
-                "bytes_sent": "10",
-                "bytes_received": "20",
-                "source": "pcapdroid",
-            },
-            ("example.com",),
-            "E001",
-        )
-        self.assertEqual(row["traffic_owner"], "com.example.app")
-        self.assertEqual(row["owner_confidence"], "high")
+        self.assertEqual(context["static_app_data_categories"], "location;contacts")
 
     def test_classify_https_allowlist_and_external(self):
         first_party = classify_risk("https", "api.example.com", "Login")

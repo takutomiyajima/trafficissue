@@ -57,7 +57,7 @@ RESULT_COLUMNS = [
     "reason",
     "static_match",
     "static_evidence",
-    "matched_static_data_categories",
+    "static_app_data_categories",
 ]
 
 
@@ -150,7 +150,7 @@ def load_static_handoff(report_path: str) -> dict:
     return handoff
 
 
-def static_context_for_destination(domain: str, handoff: dict, data_categories: object = "") -> dict:
+def static_context_for_destination(domain: str, handoff: dict) -> dict:
     """Match an observed host to the domain candidates found in the APK."""
     normalized = _clean(domain).lower().rstrip(".")
     evidence: set[str] = set()
@@ -162,12 +162,12 @@ def static_context_for_destination(domain: str, handoff: dict, data_categories: 
             normalized == candidate or normalized.endswith("." + candidate)
         ):
             evidence.update(str(value) for value in item.get("static_evidence", []))
-    expected_categories = {_clean(value) for value in handoff.get("sensitive_data_categories", []) if _clean(value)}
-    dynamic_categories = {_clean(value) for value in _clean(data_categories).split(";") if _clean(value)}
     return {
         "static_match": bool(evidence),
         "static_evidence": ";".join(sorted(evidence)),
-        "matched_static_data_categories": ";".join(sorted(expected_categories & dynamic_categories)),
+        # These categories describe app-level capability, not data proven sent
+        # to this destination. Keep that distinction explicit in the column name.
+        "static_app_data_categories": ";".join(handoff.get("sensitive_data_categories", [])),
     }
 
 
@@ -473,7 +473,6 @@ def analyze(
     metadata_path: str = "",
     static_report_path: str = "",
     integrated_output_path: str = "",
-    capture_health: Optional[dict] = None,
 ):
     import pandas as pd
 
@@ -672,13 +671,7 @@ def analyze(
             )
 
     for result in results:
-        result.update(
-            static_context_for_destination(
-                result.get("domain", ""),
-                static_handoff,
-                result.get("data_categories", ""),
-            )
-        )
+        result.update(static_context_for_destination(result.get("domain", ""), static_handoff))
     res_df = pd.DataFrame(results, columns=RESULT_COLUMNS)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     res_df.to_csv(output_path, index=False)
@@ -687,7 +680,6 @@ def analyze(
         integrated_report = build_integrated_report(
             res_df.to_dict(orient="records"),
             static_handoff,
-            capture_health,
         )
         write_integrated_report(integrated_report, integrated_output_path)
         print(f"[Analyzer] Integrated report saved to {integrated_output_path}")

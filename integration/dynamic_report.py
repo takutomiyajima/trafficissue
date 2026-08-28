@@ -11,7 +11,7 @@ from typing import Iterable, Mapping
 
 REPORT_SCHEMA_VERSION = "1.0"
 OBSERVED_STATUSES = {"observed", "metadata_only"}
-UNVERIFIED_STATUSES = {"tunnel_only", "unreadable_tls", "not_observed", "capture_failed"}
+UNVERIFIED_STATUSES = {"unreadable_tls", "not_observed", "capture_failed"}
 
 
 def _clean(value: object) -> str:
@@ -73,7 +73,6 @@ def _priority(row: Mapping[str, object], status: str) -> str:
 def build_integrated_report(
     result_rows: Iterable[Mapping[str, object]],
     static_handoff: Mapping[str, object] | None = None,
-    capture_health: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create observations, evidence and review findings without claiming intent."""
 
@@ -107,9 +106,6 @@ def build_integrated_report(
                 "scheme": _clean(row.get("scheme")) or None,
                 "method": _clean(row.get("method")) or None,
                 "risk_rule": _clean(row.get("risk_rule")) or None,
-                "capture_detail": _clean(row.get("capture_detail")) or None,
-                "traffic_owner": _clean(row.get("traffic_owner")) or "unknown",
-                "owner_confidence": _clean(row.get("owner_confidence")) or "unknown",
             }
         )
 
@@ -121,8 +117,6 @@ def build_integrated_report(
         matched_static_domains.update(static_matches)
         matched_static_categories.update(category_matches)
         if observability in UNVERIFIED_STATUSES:
-            status = "Unverified"
-        elif "owner_confidence" in row and _clean(row.get("owner_confidence")) in {"", "unknown"}:
             status = "Unverified"
         elif (static_matches or category_matches) and observability in OBSERVED_STATUSES:
             status = "Supported"
@@ -257,7 +251,6 @@ def build_integrated_report(
             "whether behavior matches development intent or whether the app is safe."
         ),
         "application": {"package_name": handoff.get("package_name")},
-        "capture_health": dict(capture_health or {}),
         "summary": {"status_counts": status_counts},
         "observations": observations,
         "evidence": evidence,
