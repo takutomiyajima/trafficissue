@@ -4,6 +4,27 @@ firebase_analytics:
   package_prefixes: [com.google.firebase.analytics]
   related_domains: [google-analytics.com, app-measurement.com]
 google_ads:
-  display_name: Google Mobile Ads
+  display_name: AdMob
   category: advertising
   package_prefixes: [com.google.android.gms.ads]
+  related_domains: [doubleclick.net]
+google_maps:
+  display_name: Google Maps
+  category: location
+  package_prefixes: [com.google.android.gms.maps]
+  related_domains: [maps.googleapis.com]
+facebook:
+  display_name: Facebook SDK
+  category: social
+  package_prefixes: [com.facebook]
+  related_domains: [facebook.com]
+adjust:
+  display_name: Adjust
+  category: attribution
+  package_prefixes: [com.adjust]
+  related_domains: [adjust.com]
+appsflyer:
+  display_name: AppsFlyer
+  category: attribution
+  package_prefixes: [com.appsflyer]
+  related_domains: [appsflyer.com]

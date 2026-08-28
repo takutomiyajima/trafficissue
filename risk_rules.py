@@ -119,6 +119,7 @@ def evaluate_traffic_risk(
     method: str = "",
     request_size: object = "",
     error: object = "",
+    capture_detail: object = "",
 ) -> RuleResult:
     """Return the highest-priority rule hit for one traffic record.
 
@@ -132,7 +133,17 @@ def evaluate_traffic_risk(
     normalized_url = _clean(url)
     normalized_method = _clean(method).upper()
     normalized_error = _clean(error)
+    normalized_capture_detail = _clean(capture_detail)
     candidates: List[RuleResult] = []
+
+    if normalized_capture_detail == "https_connect_tunnel" or normalized_error == "https_connect_tunnel":
+        return RuleResult(
+            rule_id="https_tunnel_only",
+            severity="Unknown",
+            category="HTTPSトンネルのみ観測",
+            reason="HTTPS接続先へのCONNECT試行は観測しましたが、TLS内部のHTTPリクエストは取得できませんでした。",
+            signal="https_connect_tunnel",
+        )
 
     sensitive_categories = detect_sensitive_url_fields(normalized_url)
     if sensitive_categories:

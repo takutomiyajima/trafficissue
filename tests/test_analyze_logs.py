@@ -1,8 +1,19 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from analyze_logs import analyze, classify_risk, detect_sensitive_url_fields, is_system_connectivity_probe
+from analyze_logs import (
+    analyze,
+    build_result_for_traffic_row,
+    build_result_for_metadata_row,
+    classify_risk,
+    detect_sensitive_url_fields,
+    is_system_connectivity_probe,
+    load_static_handoff,
+    static_context_for_destination,
+    StaticHandoffLoadError,
+)
 from risk_rules import destination_party
 
 
@@ -15,6 +26,86 @@ def has_pandas() -> bool:
 
 
 class AnalyzeLogsTest(unittest.TestCase):
+    def test_invalid_static_report_identifies_json_parse_stage_and_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "broken.json"
+            path.write_text('{"dynamic_analysis_handoff":', encoding="utf-8")
+
+            with self.assertRaises(StaticHandoffLoadError) as raised:
+                load_static_handoff(str(path))
+
+        self.assertEqual(raised.exception.stage, "json_parse")
+        self.assertIn("line 1", str(raised.exception.cause))
+        self.assertEqual(raised.exception.report_path, str(path))
+
+    def test_loads_and_matches_static_analysis_handoff(self):
+        handoff = {
+            "schema_version": "1.0",
+            "package_name": "com.example.app",
+            "expected_domains": [
+                {"domain": "example.net", "static_evidence": ["embedded_url_candidate"]}
+            ],
+            "sensitive_data_categories": ["location", "contacts"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "static_analysis.json"
+            path.write_text(
+                json.dumps({"dynamic_analysis_handoff": handoff}),
+                encoding="utf-8",
+            )
+            loaded = load_static_handoff(str(path))
+
+        context = static_context_for_destination("api.example.net", loaded, "location")
+        self.assertTrue(context["static_match"])
+        self.assertEqual(context["static_evidence"], "embedded_url_candidate")
+        self.assertEqual(context["matched_static_data_categories"], "location")
+
+    def test_https_connect_tunnel_is_unknown_not_connection_error(self):
+        decision = classify_risk(
+            "https",
+            "secure.example.com",
+            method="CONNECT",
+            capture_detail="https_connect_tunnel",
+        )
+        self.assertEqual(decision.rule_id, "https_tunnel_only")
+        self.assertEqual(decision.severity, "Unknown")
+
+        row = build_result_for_traffic_row(
+            {
+                "timestamp": "101",
+                "scheme": "https",
+                "domain": "secure.example.com",
+                "method": "CONNECT",
+                "url": "https://secure.example.com:443",
+                "capture_detail": "https_connect_tunnel",
+                "error": "",
+            },
+            ("example.com",),
+            "E001",
+        )
+        self.assertEqual(row["observability_status"], "tunnel_only")
+        self.assertEqual(row["risk_rule"], "https_tunnel_only")
+        self.assertEqual(row["traffic_owner"], "unknown")
+
+    def test_pcap_package_is_high_confidence_traffic_owner(self):
+        row = build_result_for_metadata_row(
+            {
+                "timestamp": "101",
+                "package": "com.example.app",
+                "destination_host": "api.example.com",
+                "destination_ip": "203.0.113.10",
+                "destination_port": "443",
+                "protocol": "TCP",
+                "bytes_sent": "10",
+                "bytes_received": "20",
+                "source": "pcapdroid",
+            },
+            ("example.com",),
+            "E001",
+        )
+        self.assertEqual(row["traffic_owner"], "com.example.app")
+        self.assertEqual(row["owner_confidence"], "high")
+
     def test_classify_https_allowlist_and_external(self):
         first_party = classify_risk("https", "api.example.com", "Login")
         external = classify_risk("https", "unknown-site.com", "Open Page")

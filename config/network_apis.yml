@@ -3,9 +3,17 @@ http:
     methods: [newCall]
   - class: Ljava/net/HttpURLConnection;
     methods: [connect]
+  - class: Lretrofit2/Retrofit;
+    methods: [create]
+  - class: Lcom/android/volley/RequestQueue;
+    methods: [add]
 webview:
   - class: Landroid/webkit/WebView;
     methods: [loadUrl, postUrl]
 socket:
   - class: Ljava/net/Socket;
     methods: [connect]
+  - class: Ljava/net/DatagramSocket;
+    methods: [send]
+  - class: Ljavax/net/ssl/SSLSocket;
+    methods: [startHandshake]

@@ -9,11 +9,33 @@ contacts:
   permissions:
     - android.permission.READ_CONTACTS
     - android.permission.WRITE_CONTACTS
+personal_info:
+  sensitive: true
+  permissions:
+    - android.permission.GET_ACCOUNTS
+    - android.permission.READ_PHONE_NUMBERS
+calendar:
+  sensitive: true
+  permissions:
+    - android.permission.READ_CALENDAR
+    - android.permission.WRITE_CALENDAR
+photos_videos:
+  sensitive: true
+  permissions:
+    - android.permission.CAMERA
+audio:
+  sensitive: true
+  permissions:
+    - android.permission.RECORD_AUDIO
+messages:
+  sensitive: true
+  permissions:
+    - android.permission.READ_SMS
+    - android.permission.SEND_SMS
 device_identifier:
   sensitive: true
   permissions:
     - android.permission.READ_PHONE_STATE
-    - android.permission.READ_PHONE_NUMBERS
 network:
   sensitive: false
   permissions:

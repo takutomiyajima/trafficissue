@@ -9,6 +9,47 @@ import static_analyzer
 
 
 class StaticAnalyzerTest(unittest.TestCase):
+    def test_missing_apk_reports_input_validation_stage(self):
+        with self.assertRaises(static_analyzer.StaticAnalysisStageError) as raised:
+            static_analyzer.analyze_static("/definitely/missing/app.apk")
+
+        self.assertEqual(raised.exception.stage, "input_validation")
+        self.assertIsInstance(raised.exception.cause, FileNotFoundError)
+        self.assertIn("/definitely/missing/app.apk", str(raised.exception))
+
+    def test_load_static_config_builds_rule_maps_from_yaml(self):
+        config = static_analyzer.load_static_config()
+
+        permissions = static_analyzer.configured_permission_categories(config)
+        sensitive_apis = static_analyzer.configured_api_hints(config["sensitive_apis"])
+        network_apis = static_analyzer.configured_api_hints(config["network_apis"])
+        sdk_hints, sdk_metadata = static_analyzer.configured_sdk_hints(config["sdk_signatures"])
+
+        self.assertEqual(
+            permissions["android.permission.RECORD_AUDIO"],
+            ("audio", True),
+        )
+        self.assertIn("getLastLocation", sensitive_apis["location"])
+        self.assertIn("retrofit2/Retrofit", network_apis["http"])
+        self.assertIn("com.adjust", sdk_hints["Adjust"])
+        self.assertEqual(sdk_metadata["Adjust"]["category"], "attribution")
+
+    def test_api_detection_requires_declaring_class_not_generic_method_name(self):
+        config = static_analyzer.load_static_config()
+
+        false_positive = static_analyzer.detect_configured_api_hints(
+            ["start", "query", "add"],
+            config["sensitive_apis"],
+        )
+        qualified = static_analyzer.detect_configured_api_hints(
+            ["Landroid/media/MediaRecorder;", "start"],
+            config["sensitive_apis"],
+        )
+
+        self.assertEqual(false_positive, {})
+        self.assertIn("android/media/MediaRecorder", qualified["audio"])
+        self.assertIn("start", qualified["audio"])
+
     def test_analyze_static_extracts_urls_domains_sdk_hints_and_badging_permissions(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -64,6 +105,14 @@ class StaticAnalyzerTest(unittest.TestCase):
             self.assertIn("admob", "\n".join(report["sdk_hints"].keys()).lower().replace(" ", "_"))
             self.assertNotIn("sensitive_api_hints", report)
             self.assertIn("sensitive_api_string_hints", report)
+            handoff = report["dynamic_analysis_handoff"]
+            self.assertEqual(handoff["schema_version"], "1.0")
+            self.assertEqual(handoff["package_name"], "com.example.app")
+            self.assertIn(
+                "maps.googleapis.com",
+                {item["domain"] for item in handoff["expected_domains"]},
+            )
+            self.assertIn("location", handoff["sensitive_data_categories"])
 
     def test_parse_manifest_components_extracts_exported_permissions_and_deep_links(self):
         manifest_xml = '''<manifest xmlns:android="http://schemas.android.com/apk/res/android">

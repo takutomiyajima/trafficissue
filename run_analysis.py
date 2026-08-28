@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Union
 
 
-TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size", "response_timestamp", "duration_ms", "error"]
+TRAFFIC_LOG_COLUMNS = ["timestamp", "scheme", "domain", "method", "url", "status_code", "content_type", "request_size", "response_size", "response_timestamp", "duration_ms", "capture_detail", "error"]
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_UI_LOG_PATH = DEFAULT_LOG_DIR / "ui_events.csv"
@@ -46,6 +46,7 @@ class ProxyCaptureProbe:
     before_count: int
     after_count: int
     message: str
+    status: str = "unknown"
 
 
 def default_log_paths(log_dir: Optional[Union[os.PathLike, str]] = None) -> LogPaths:
@@ -178,32 +179,74 @@ def probe_proxy_capture(
     before_count = count_traffic_records(traffic_path)
     probe_url = f"http://example.com/?trafficissue_proxy_probe={int(time.time())}"
     proxy_url = f"http://{proxy_state.host}:{proxy_state.port}"
-    shell_script = (
-        "if command -v curl >/dev/null 2>&1; then "
-        f"curl -x {proxy_url} -m 5 -sS -o /dev/null {probe_url}; "
-        "else exit 127; fi"
-    )
-
     print(f"[MITM] Verifying Android -> mitmproxy capture path with curl via {proxy_url}")
-    result = adb_shell(["sh", "-c", shell_script], serial=serial, check=False)
+    curl_check = adb_shell(["command", "-v", "curl"], serial=serial, check=False)
+    if curl_check.returncode != 0:
+        message = "Android shell does not provide curl, so automatic proxy capture verification was skipped."
+        print(f"[WARN] {message}")
+        return ProxyCaptureProbe(True, False, before_count, before_count, message, "tool_unavailable")
+
+    result = adb_shell(
+        ["curl", "-x", proxy_url, "-m", "5", "-sS", "-o", "/dev/null", probe_url],
+        serial=serial,
+        check=False,
+    )
     time.sleep(0.5)
     after_count = count_traffic_records(traffic_path)
 
     if after_count > before_count:
         message = "Android shell curl reached mitmproxy; capture path is working for explicit-proxy HTTP."
         print(f"[MITM] Proxy capture probe OK: {message}")
-        return ProxyCaptureProbe(True, True, before_count, after_count, message)
+        return ProxyCaptureProbe(True, True, before_count, after_count, message, "captured")
 
     output = (result.stdout + result.stderr).strip()
-    if result.returncode == 127:
-        message = "Android shell does not provide curl, so automatic proxy capture verification was skipped."
-    else:
-        message = (
-            "Android shell curl did not produce a mitmproxy log row. "
-            f"returncode={result.returncode}; output={output or '(no output)'}"
-        )
+    message = (
+        "Android shell curl did not produce a mitmproxy log row. "
+        f"returncode={result.returncode}; output={output or '(no output)'}"
+    )
     print(f"[WARN] {message}")
-    return ProxyCaptureProbe(True, False, before_count, after_count, message)
+    return ProxyCaptureProbe(True, False, before_count, after_count, message, "request_failed")
+
+
+def assess_capture_health(
+    traffic_path: Union[os.PathLike, str],
+    probe: Optional[ProxyCaptureProbe] = None,
+) -> dict:
+    """Summarize whether the run captured HTTP details or tunnel metadata only."""
+    detailed_requests = 0
+    probe_requests = 0
+    tunnel_attempts = 0
+    transport_errors = 0
+    if os.path.exists(traffic_path):
+        with open(traffic_path, encoding="utf-8", newline="") as file:
+            for row in csv.DictReader(file):
+                detail = (row.get("capture_detail") or "").strip()
+                error = (row.get("error") or "").strip()
+                url = (row.get("url") or "").strip()
+                if "trafficissue_proxy_probe=" in url:
+                    probe_requests += 1
+                    continue
+                if detail == "https_connect_tunnel" or error == "https_connect_tunnel":
+                    tunnel_attempts += 1
+                elif error:
+                    transport_errors += 1
+                elif (row.get("method") or "").upper() != "CONNECT":
+                    detailed_requests += 1
+
+    if detailed_requests:
+        overall = "verified"
+    elif tunnel_attempts or transport_errors or (probe is not None and probe.captured):
+        overall = "partial"
+    else:
+        overall = "failed"
+    return {
+        "overall": overall,
+        "proxy_probe": probe.status if probe else "not_attempted",
+        "http_requests_observed": detailed_requests,
+        "probe_requests_observed": probe_requests,
+        "connect_tunnels_observed": tunnel_attempts,
+        "transport_errors_observed": transport_errors,
+    }
 
 
 def warn_if_no_app_traffic_records(
@@ -424,7 +467,11 @@ def main() -> int:
     if not args.skip_static:
         from static_analyzer import analyze_static
 
-        analyze_static(args.apk, str(static_output_path))
+        analyze_static(
+            args.apk,
+            str(static_output_path),
+            str(static_output_path.with_suffix(".json")),
+        )
 
     mitm_proc = None if args.skip_capture else start_mitmproxy(
         args.listen_port,
@@ -475,6 +522,15 @@ def main() -> int:
             mitmdump_log_path=mitmdump_log_path,
         )
 
+    capture_health = assess_capture_health(traffic_log_path, proxy_probe)
+    print(
+        "[MITM] Capture health: "
+        f"overall={capture_health['overall']} "
+        f"probe={capture_health['proxy_probe']} "
+        f"http={capture_health['http_requests_observed']} "
+        f"tunnels={capture_health['connect_tunnels_observed']}"
+    )
+
     from analyze_logs import analyze
 
     analyze(
@@ -486,6 +542,13 @@ def main() -> int:
         include_system_probes=args.include_system_probes,
         target_package=args.package or "",
         metadata_path=str(metadata_log_path) if metadata_log_path.exists() else "",
+        static_report_path=(
+            str(static_output_path.with_suffix(".json"))
+            if not args.skip_static and static_output_path.with_suffix(".json").exists()
+            else ""
+        ),
+        integrated_output_path=str(Path(args.log_dir).resolve() / "integrated_analysis.json"),
+        capture_health=capture_health,
     )
     print(f"[DONE] Results are available in {risk_results_path}")
     return 0

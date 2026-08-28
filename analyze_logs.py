@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import sys
 from typing import List, Optional, Sequence
 from urllib.parse import urlparse
+
+from integration.dynamic_report import build_integrated_report, write_integrated_report
 
 from risk_rules import (
     RuleResult,
@@ -41,13 +45,19 @@ RESULT_COLUMNS = [
     "response_size",
     "response_timestamp",
     "duration_ms",
+    "capture_detail",
     "error",
+    "traffic_owner",
+    "owner_confidence",
     "risk",
     "risk_category",
     "risk_rule",
     "risk_signal",
     "data_categories",
     "reason",
+    "static_match",
+    "static_evidence",
+    "matched_static_data_categories",
 ]
 
 
@@ -55,6 +65,7 @@ DEFAULT_UI_PATH = "logs/ui_events.csv"
 DEFAULT_TRAFFIC_PATH = "logs/traffic_logs.csv"
 DEFAULT_OUTPUT_PATH = "logs/risk_results.csv"
 DEFAULT_METADATA_PATH = "logs/pcap_metadata.csv"
+DEFAULT_INTEGRATED_OUTPUT_PATH = "logs/integrated_analysis.json"
 DEFAULT_WINDOW_SECONDS = 5.0
 DEFAULT_ALLOWED_DOMAINS = ("example.com", "api.example.com")
 SYSTEM_CONNECTIVITY_CHECK_DOMAINS = (
@@ -75,6 +86,7 @@ TRAFFIC_COLUMNS = [
     "response_size",
     "response_timestamp",
     "duration_ms",
+    "capture_detail",
     "error",
 ]
 UI_COLUMNS = ["event_id", "timestamp", "screen", "action", "element_text"]
@@ -95,11 +107,68 @@ METADATA_ONLY_CATEGORY = "通信メタデータのみ"
 METADATA_ONLY_REASON = "VPN/pcap由来の通信メタデータは観測されましたが、HTTP本文は読めません。"
 
 
+class StaticHandoffLoadError(ValueError):
+    """Failure to load static context, including file and validation stage."""
+
+    def __init__(self, stage: str, report_path: str, cause: BaseException | str):
+        self.stage = stage
+        self.report_path = report_path
+        self.cause = cause
+        super().__init__(f"static handoff failed at {stage} for {report_path}: {cause}")
+
+
 def _clean(value: object) -> str:
     """Return a normalized string for CSV cells that may be NaN/None."""
     if value is None or value != value:
         return ""
     return str(value).strip()
+
+
+def load_static_handoff(report_path: str) -> dict:
+    """Load the versioned static-to-dynamic handoff from a static JSON report."""
+    if not report_path:
+        return {}
+    try:
+        with open(report_path, encoding="utf-8") as file:
+            report = json.load(file)
+    except OSError as exc:
+        raise StaticHandoffLoadError("file_read", report_path, exc) from exc
+    except json.JSONDecodeError as exc:
+        detail = f"line {exc.lineno}, column {exc.colno}: {exc.msg}"
+        raise StaticHandoffLoadError("json_parse", report_path, detail) from exc
+    handoff = report.get("dynamic_analysis_handoff")
+    if not isinstance(handoff, dict):
+        raise StaticHandoffLoadError(
+            "schema_validation", report_path, "dynamic_analysis_handoff is missing or is not an object"
+        )
+    if handoff.get("schema_version") != "1.0":
+        raise StaticHandoffLoadError(
+            "schema_validation",
+            report_path,
+            f"unsupported schema_version={handoff.get('schema_version')!r}; expected '1.0'",
+        )
+    return handoff
+
+
+def static_context_for_destination(domain: str, handoff: dict, data_categories: object = "") -> dict:
+    """Match an observed host to the domain candidates found in the APK."""
+    normalized = _clean(domain).lower().rstrip(".")
+    evidence: set[str] = set()
+    for item in handoff.get("expected_domains", []):
+        if not isinstance(item, dict):
+            continue
+        candidate = _clean(item.get("domain")).lower().rstrip(".")
+        if candidate and normalized and (
+            normalized == candidate or normalized.endswith("." + candidate)
+        ):
+            evidence.update(str(value) for value in item.get("static_evidence", []))
+    expected_categories = {_clean(value) for value in handoff.get("sensitive_data_categories", []) if _clean(value)}
+    dynamic_categories = {_clean(value) for value in _clean(data_categories).split(";") if _clean(value)}
+    return {
+        "static_match": bool(evidence),
+        "static_evidence": ";".join(sorted(evidence)),
+        "matched_static_data_categories": ";".join(sorted(expected_categories & dynamic_categories)),
+    }
 
 
 def extract_app_package(screen: str) -> str:
@@ -130,6 +199,8 @@ def observability_status_for_decision(decision: RuleResult) -> str:
         return "unreadable_tls"
     if decision.rule_id == "metadata_only":
         return "metadata_only"
+    if decision.rule_id == "https_tunnel_only":
+        return "tunnel_only"
     return "observed"
 
 
@@ -169,6 +240,7 @@ def classify_risk(
     method: str = "",
     request_size: object = "",
     error: object = "",
+    capture_detail: object = "",
 ) -> RuleResult:
     """Classify privacy risk with the focused MVP rule set."""
     return evaluate_traffic_risk(
@@ -182,6 +254,7 @@ def classify_risk(
         method=method,
         request_size=request_size,
         error=error,
+        capture_detail=capture_detail,
     )
 
 
@@ -252,6 +325,8 @@ def _empty_metadata_fields() -> dict:
         "protocol": "",
         "bytes_sent": "",
         "bytes_received": "",
+        "traffic_owner": "unknown",
+        "owner_confidence": "unknown",
     }
 
 
@@ -321,7 +396,10 @@ def build_result_for_metadata_row(
         "response_size": "",
         "response_timestamp": "",
         "duration_ms": "",
+        "capture_detail": "pcap_metadata",
         "error": "",
+        "traffic_owner": _clean(metadata_row.get("package")) or "unknown",
+        "owner_confidence": "high" if _clean(metadata_row.get("package")) else "unknown",
         "risk": decision.severity,
         "risk_category": decision.category,
         "risk_rule": decision.rule_id,
@@ -347,6 +425,7 @@ def build_result_for_traffic_row(traffic_row, allowed_domains: Sequence[str], ev
         method=traffic_row.get("method"),
         request_size=traffic_row.get("request_size"),
         error=traffic_row.get("error"),
+        capture_detail=traffic_row.get("capture_detail"),
     )
     return {
         "event_id": event_id,
@@ -370,7 +449,11 @@ def build_result_for_traffic_row(traffic_row, allowed_domains: Sequence[str], ev
         "response_size": _clean(traffic_row.get("response_size")),
         "response_timestamp": _clean(traffic_row.get("response_timestamp")),
         "duration_ms": _clean(traffic_row.get("duration_ms")),
-        "error": _clean(traffic_row.get("error")),
+        "capture_detail": (
+            _clean(traffic_row.get("capture_detail"))
+            or ("https_connect_tunnel" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else "")
+        ),
+        "error": "" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else _clean(traffic_row.get("error")),
         "risk": decision.severity,
         "risk_category": decision.category,
         "risk_rule": decision.rule_id,
@@ -388,10 +471,14 @@ def analyze(
     include_system_probes: bool = False,
     target_package: str = "",
     metadata_path: str = "",
+    static_report_path: str = "",
+    integrated_output_path: str = "",
+    capture_health: Optional[dict] = None,
 ):
     import pandas as pd
 
     allowed_domains = tuple(allowed_domains or DEFAULT_ALLOWED_DOMAINS)
+    static_handoff = load_static_handoff(static_report_path)
 
     if not os.path.exists(traffic_path):
         raise FileNotFoundError("Traffic log not found. Please run capture first.")
@@ -427,7 +514,7 @@ def analyze(
         traffic_df = traffic_df[~system_probe_mask].copy()
         traffic_df = _ensure_columns(traffic_df, TRAFFIC_COLUMNS)
 
-    target_package = _clean(target_package)
+    target_package = _clean(target_package) or _clean(static_handoff.get("package_name"))
     if target_package and not ui_df.empty:
         package_mask = ui_df["screen"].map(lambda value: extract_app_package(_clean(value)) in {"", target_package})
         ui_df = ui_df[package_mask].copy()
@@ -509,7 +596,10 @@ def analyze(
                     "response_size": "",
                     "response_timestamp": "",
                     "duration_ms": "",
+                    "capture_detail": "no_matching_traffic",
                     "error": "",
+                    "traffic_owner": "unknown",
+                    "owner_confidence": "unknown",
                     "risk": "Unknown",
                     "risk_category": "観測不能",
                     "risk_rule": "no_observed_traffic",
@@ -541,6 +631,7 @@ def analyze(
                 method=traffic_row.get("method"),
                 request_size=traffic_row.get("request_size"),
                 error=traffic_row.get("error"),
+                capture_detail=traffic_row.get("capture_detail"),
             )
 
             results.append(
@@ -566,7 +657,11 @@ def analyze(
                     "response_size": _clean(traffic_row.get("response_size")),
                     "response_timestamp": _clean(traffic_row.get("response_timestamp")),
                     "duration_ms": _clean(traffic_row.get("duration_ms")),
-                    "error": _clean(traffic_row.get("error")),
+                    "capture_detail": (
+                        _clean(traffic_row.get("capture_detail"))
+                        or ("https_connect_tunnel" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else "")
+                    ),
+                    "error": "" if _clean(traffic_row.get("error")) == "https_connect_tunnel" else _clean(traffic_row.get("error")),
                     "risk": decision.severity,
                     "risk_category": decision.category,
                     "risk_rule": decision.rule_id,
@@ -576,10 +671,26 @@ def analyze(
                 }
             )
 
+    for result in results:
+        result.update(
+            static_context_for_destination(
+                result.get("domain", ""),
+                static_handoff,
+                result.get("data_categories", ""),
+            )
+        )
     res_df = pd.DataFrame(results, columns=RESULT_COLUMNS)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     res_df.to_csv(output_path, index=False)
     print(f"[Analyzer] Analysis complete. Saved to {output_path}")
+    if integrated_output_path:
+        integrated_report = build_integrated_report(
+            res_df.to_dict(orient="records"),
+            static_handoff,
+            capture_health,
+        )
+        write_integrated_report(integrated_report, integrated_output_path)
+        print(f"[Analyzer] Integrated report saved to {integrated_output_path}")
     return res_df
 
 
@@ -597,6 +708,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-package", default="", help="Only correlate UI/metadata rows belonging to this Android package.")
     parser.add_argument("--metadata-log", default="", help="Optional VPN/pcap metadata CSV, for example PCAPdroid export normalized to pcap_metadata.csv.")
+    parser.add_argument("--static-report", default="", help="Optional static_analysis.json used to enrich dynamic results.")
+    parser.add_argument(
+        "--integrated-output",
+        default=DEFAULT_INTEGRATED_OUTPUT_PATH,
+        help="Path to write the evidence-oriented static/dynamic JSON report.",
+    )
     parser.add_argument(
         "--include-system-probes",
         action="store_true",
@@ -617,6 +734,15 @@ if __name__ == "__main__":
             include_system_probes=args.include_system_probes,
             target_package=args.target_package,
             metadata_path=args.metadata_log,
+            static_report_path=args.static_report,
+            integrated_output_path=args.integrated_output,
         )
     except FileNotFoundError as exc:
         print(f"[Error] {exc}")
+    except StaticHandoffLoadError as exc:
+        print(
+            f"[Analyzer][ERROR] stage={exc.stage} static_report={exc.report_path}",
+            file=sys.stderr,
+        )
+        print(f"[Analyzer][ERROR] cause={exc.cause}", file=sys.stderr)
+        raise SystemExit(1)

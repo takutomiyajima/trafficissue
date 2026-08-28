@@ -101,7 +101,7 @@ class RunAnalysisProxyTest(unittest.TestCase):
                 self.assertIs(proc, mock_popen.return_value)
                 self.assertEqual(
                     traffic_path.read_text(encoding="utf-8"),
-                    "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size,response_timestamp,duration_ms,error\n",
+                    "timestamp,scheme,domain,method,url,status_code,content_type,request_size,response_size,response_timestamp,duration_ms,capture_detail,error\n",
                 )
                 command = mock_popen.call_args.args[0]
                 self.assertIn(str(run_analysis.CAPTURE_SCRIPT_PATH), command)
@@ -167,6 +167,8 @@ class RunAnalysisProxyTest(unittest.TestCase):
             )
 
             def adb_shell_side_effect(command, serial=None, check=True):
+                if command == ["command", "-v", "curl"]:
+                    return run_analysis.subprocess.CompletedProcess(["adb"], 0, stdout="/system/bin/curl\n", stderr="")
                 with traffic_path.open("a", encoding="utf-8") as f:
                     f.write("100,http,example.com,GET,http://example.com/?trafficissue_proxy_probe=1,200,,0,10\n")
                 return run_analysis.subprocess.CompletedProcess(["adb"], 0, stdout="", stderr="")
@@ -181,7 +183,51 @@ class RunAnalysisProxyTest(unittest.TestCase):
             self.assertEqual(result.before_count, 0)
             self.assertEqual(result.after_count, 1)
             command = mock_adb_shell.call_args.args[0]
-            self.assertIn("curl -x http://10.0.2.2:8080", command[2])
+            self.assertEqual(command[:3], ["curl", "-x", "http://10.0.2.2:8080"])
+
+    @patch("run_analysis.adb_shell")
+    def test_probe_proxy_capture_reports_missing_curl_without_running_shell_script(self, mock_adb_shell):
+        with tempfile.TemporaryDirectory() as tmp:
+            traffic_path = Path(tmp) / "traffic_logs.csv"
+            traffic_path.write_text("timestamp,scheme,domain,method,url\n", encoding="utf-8")
+            mock_adb_shell.return_value = run_analysis.subprocess.CompletedProcess(
+                ["adb"], 1, stdout="", stderr="command not found"
+            )
+
+            result = run_analysis.probe_proxy_capture(
+                traffic_path,
+                run_analysis.ProxyState("10.0.2.2", 8080, "", False),
+            )
+
+        self.assertEqual(result.status, "tool_unavailable")
+        self.assertEqual(mock_adb_shell.call_count, 1)
+
+    def test_assess_capture_health_distinguishes_tunnels_from_http_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "traffic_logs.csv"
+            path.write_text(
+                "timestamp,scheme,domain,method,url,capture_detail,error\n"
+                "1,https,secure.example,CONNECT,https://secure.example:443,https_connect_tunnel,\n",
+                encoding="utf-8",
+            )
+            health = run_analysis.assess_capture_health(path)
+            self.assertEqual(health["overall"], "partial")
+            self.assertEqual(health["connect_tunnels_observed"], 1)
+            self.assertEqual(health["http_requests_observed"], 0)
+
+    def test_assess_capture_health_excludes_proxy_probe_from_app_http_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "traffic_logs.csv"
+            path.write_text(
+                "timestamp,scheme,domain,method,url,capture_detail,error\n"
+                "1,http,example.com,GET,http://example.com/?trafficissue_proxy_probe=1,http_request,\n",
+                encoding="utf-8",
+            )
+            probe = run_analysis.ProxyCaptureProbe(True, True, 0, 1, "ok", "captured")
+            health = run_analysis.assess_capture_health(path, probe)
+            self.assertEqual(health["overall"], "partial")
+            self.assertEqual(health["probe_requests_observed"], 1)
+            self.assertEqual(health["http_requests_observed"], 0)
 
     def test_warn_if_no_app_traffic_records_reports_probe_only_log(self):
         with tempfile.TemporaryDirectory() as tmp:
