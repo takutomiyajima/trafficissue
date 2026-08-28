@@ -1,8 +1,17 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from analyze_logs import analyze, classify_risk, detect_sensitive_url_fields, is_system_connectivity_probe
+from analyze_logs import (
+    analyze,
+    classify_risk,
+    detect_sensitive_url_fields,
+    is_system_connectivity_probe,
+    load_static_handoff,
+    static_context_for_destination,
+    StaticHandoffLoadError,
+)
 from risk_rules import destination_party
 
 
@@ -15,6 +24,40 @@ def has_pandas() -> bool:
 
 
 class AnalyzeLogsTest(unittest.TestCase):
+    def test_invalid_static_report_identifies_json_parse_stage_and_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "broken.json"
+            path.write_text('{"dynamic_analysis_handoff":', encoding="utf-8")
+
+            with self.assertRaises(StaticHandoffLoadError) as raised:
+                load_static_handoff(str(path))
+
+        self.assertEqual(raised.exception.stage, "json_parse")
+        self.assertIn("line 1", str(raised.exception.cause))
+        self.assertEqual(raised.exception.report_path, str(path))
+
+    def test_loads_and_matches_static_analysis_handoff(self):
+        handoff = {
+            "schema_version": "1.0",
+            "package_name": "com.example.app",
+            "expected_domains": [
+                {"domain": "example.net", "static_evidence": ["embedded_url_candidate"]}
+            ],
+            "sensitive_data_categories": ["location", "contacts"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "static_analysis.json"
+            path.write_text(
+                json.dumps({"dynamic_analysis_handoff": handoff}),
+                encoding="utf-8",
+            )
+            loaded = load_static_handoff(str(path))
+
+        context = static_context_for_destination("api.example.net", loaded)
+        self.assertTrue(context["static_match"])
+        self.assertEqual(context["static_evidence"], "embedded_url_candidate")
+        self.assertEqual(context["static_app_data_categories"], "location;contacts")
+
     def test_classify_https_allowlist_and_external(self):
         first_party = classify_risk("https", "api.example.com", "Login")
         external = classify_risk("https", "unknown-site.com", "Open Page")

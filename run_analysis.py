@@ -424,7 +424,11 @@ def main() -> int:
     if not args.skip_static:
         from static_analyzer import analyze_static
 
-        analyze_static(args.apk, str(static_output_path))
+        analyze_static(
+            args.apk,
+            str(static_output_path),
+            str(static_output_path.with_suffix(".json")),
+        )
 
     mitm_proc = None if args.skip_capture else start_mitmproxy(
         args.listen_port,
@@ -486,6 +490,12 @@ def main() -> int:
         include_system_probes=args.include_system_probes,
         target_package=args.package or "",
         metadata_path=str(metadata_log_path) if metadata_log_path.exists() else "",
+        static_report_path=(
+            str(static_output_path.with_suffix(".json"))
+            if not args.skip_static and static_output_path.with_suffix(".json").exists()
+            else ""
+        ),
+        integrated_output_path=str(Path(args.log_dir).resolve() / "integrated_analysis.json"),
     )
     print(f"[DONE] Results are available in {risk_results_path}")
     return 0

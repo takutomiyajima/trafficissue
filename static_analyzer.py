@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
@@ -64,6 +66,194 @@ SDK_HINTS = {
     "Adjust": ("adjust.com", "com.adjust"),
     "AppsFlyer": ("appsflyer.com", "com.appsflyer"),
 }
+
+CONFIG_DIR = Path(__file__).resolve().parent / "config"
+
+
+class StaticAnalysisStageError(RuntimeError):
+    """An actionable static-analysis failure with stage and input context."""
+
+    def __init__(self, stage: str, apk_path: str, cause: BaseException):
+        self.stage = stage
+        self.apk_path = apk_path
+        self.cause = cause
+        super().__init__(f"static analysis failed at {stage} for {apk_path}: {cause}")
+
+
+@contextmanager
+def static_analysis_stage(stage: str, apk_path: str):
+    try:
+        yield
+    except StaticAnalysisStageError:
+        raise
+    except Exception as exc:
+        raise StaticAnalysisStageError(stage, apk_path, exc) from exc
+
+
+def _yaml_scalar(value: str) -> object:
+    """Parse the small, dependency-free YAML subset used by ``config/``."""
+
+    value = value.strip()
+    if value in {"true", "false"}:
+        return value == "true"
+    if value.startswith("[") and value.endswith("]"):
+        return [item.strip().strip("'\"") for item in value[1:-1].split(",") if item.strip()]
+    return value.strip("'\"")
+
+
+def _load_signature_yaml(path: Path) -> Dict[str, object]:
+    """Load the intentionally simple project YAML without requiring PyYAML."""
+
+    result: Dict[str, object] = {}
+    section: Optional[str] = None
+    list_key: Optional[str] = None
+    current_item: Optional[Dict[str, object]] = None
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        text = line.strip()
+        if indent == 0 and text.endswith(":"):
+            section = text[:-1]
+            result[section] = {}
+            list_key = None
+            current_item = None
+        elif section and indent == 2 and text.startswith("- "):
+            if not isinstance(result[section], list):
+                result[section] = []
+            values = result[section]
+            assert isinstance(values, list)
+            value = text[2:]
+            key, item_value = value.split(":", 1)
+            current_item = {key: _yaml_scalar(item_value)}
+            values.append(current_item)
+            list_key = None
+        elif section and indent == 2 and text.endswith(":"):
+            list_key = text[:-1]
+            cast = result[section]
+            assert isinstance(cast, dict)
+            cast[list_key] = []
+            current_item = None
+        elif section and indent == 2 and ":" in text:
+            key, value = text.split(":", 1)
+            cast = result[section]
+            assert isinstance(cast, dict)
+            cast[key] = _yaml_scalar(value)
+        elif section and indent >= 4 and text.startswith("- "):
+            value = text[2:]
+            cast = result[section]
+            assert isinstance(cast, dict) and list_key
+            values = cast[list_key]
+            assert isinstance(values, list)
+            if ":" in value:
+                key, item_value = value.split(":", 1)
+                current_item = {key: _yaml_scalar(item_value)}
+                values.append(current_item)
+            else:
+                values.append(_yaml_scalar(value))
+                current_item = None
+        elif current_item is not None and indent >= 4 and ":" in text:
+            key, value = text.split(":", 1)
+            current_item[key] = _yaml_scalar(value)
+    return result
+
+
+def load_static_config(config_dir: Path | str = CONFIG_DIR) -> Dict[str, object]:
+    """Load all static-analysis rules, failing clearly on an incomplete setup."""
+
+    directory = Path(config_dir)
+    names = ("permission_categories", "sensitive_apis", "network_apis", "sdk_signatures")
+    config: Dict[str, object] = {}
+    for name in names:
+        path = directory / f"{name}.yml"
+        if not path.is_file():
+            raise FileNotFoundError(f"Static analysis config not found: {path}")
+        config[name] = _load_signature_yaml(path)
+    return config
+
+
+def configured_permission_categories(config: Dict[str, object]) -> Dict[str, tuple[str, bool]]:
+    result: Dict[str, tuple[str, bool]] = {}
+    categories = config["permission_categories"]
+    assert isinstance(categories, dict)
+    for category, details in categories.items():
+        assert isinstance(details, dict)
+        for permission in details.get("permissions", []):
+            result[str(permission)] = (category, bool(details.get("sensitive", False)))
+    return result
+
+
+def configured_api_hints(config_section: object) -> Dict[str, tuple[str, ...]]:
+    result: Dict[str, tuple[str, ...]] = {}
+    assert isinstance(config_section, dict)
+    for category, details in config_section.items():
+        api_items = details.get("apis", details) if isinstance(details, dict) else details
+        if isinstance(api_items, list):
+            values: List[str] = []
+            for item in api_items:
+                if not isinstance(item, dict):
+                    continue
+                values.append(str(item.get("class", "")).strip("L;"))
+                values.extend(str(method) for method in item.get("methods", []))
+            result[category] = tuple(value for value in values if value)
+    return result
+
+
+def detect_configured_api_hints(
+    decoded_strings: List[str],
+    config_section: object,
+) -> Dict[str, List[str]]:
+    """Detect API signatures only when their declaring class is present.
+
+    Method names such as ``start``, ``add`` and ``query`` are too generic to be
+    useful independently. Requiring the configured class prevents those common
+    strings from producing unrelated privacy findings.
+    """
+
+    assert isinstance(config_section, dict)
+    joined_lower = "\n".join(decoded_strings).lower()
+    detected: Dict[str, List[str]] = {}
+    for category, details in config_section.items():
+        api_items = details.get("apis", details) if isinstance(details, dict) else details
+        if not isinstance(api_items, list):
+            continue
+        hits: set[str] = set()
+        for item in api_items:
+            if not isinstance(item, dict):
+                continue
+            raw_class = str(item.get("class", ""))
+            normalized_class = raw_class.strip("L;")
+            class_variants = {
+                raw_class.lower(),
+                normalized_class.lower(),
+                normalized_class.replace("/", ".").lower(),
+            }
+            if not normalized_class or not any(value in joined_lower for value in class_variants):
+                continue
+            hits.add(normalized_class)
+            hits.update(
+                str(method)
+                for method in item.get("methods", [])
+                if str(method).lower() in joined_lower
+            )
+        if hits:
+            detected[category] = sorted(hits)
+    return detected
+
+
+def configured_sdk_hints(config_section: object) -> tuple[Dict[str, tuple[str, ...]], Dict[str, Dict[str, object]]]:
+    hints: Dict[str, tuple[str, ...]] = {}
+    metadata: Dict[str, Dict[str, object]] = {}
+    assert isinstance(config_section, dict)
+    for key, details in config_section.items():
+        assert isinstance(details, dict)
+        display_name = str(details.get("display_name", key))
+        values = list(details.get("package_prefixes", [])) + list(details.get("related_domains", []))
+        hints[display_name] = tuple(str(value) for value in values)
+        metadata[display_name] = {"id": key, "category": details.get("category", "unknown")}
+    return hints, metadata
 
 
 IGNORED_URL_HOST_SUFFIXES = {
@@ -457,8 +647,12 @@ def safe_decode(value: bytes) -> str:
     return value.decode("utf-8", errors="ignore").strip("\x00")
 
 
-def categorize_permission(permission: str) -> Dict[str, object]:
-    category, sensitive = PERMISSION_CATEGORIES.get(permission, ("other", False))
+def categorize_permission(
+    permission: str,
+    permission_categories: Optional[Dict[str, tuple[str, bool]]] = None,
+) -> Dict[str, object]:
+    categories = permission_categories or PERMISSION_CATEGORIES
+    category, sensitive = categories.get(permission, ("other", False))
     return {"name": permission, "category": category, "sensitive": sensitive}
 
 
@@ -634,40 +828,31 @@ def detect_hints(decoded_strings: List[str], hints: Dict[str, Sequence[str]]) ->
     return detected
 
 
-def detect_api_string_hints(
-    decoded_strings: List[str],
-    hints: Dict[str, Sequence[str]],
+def format_api_evidence(
+    detected: Dict[str, List[str]],
     declared_permissions: set[str],
 ) -> Dict[str, List[Dict[str, object]]]:
+    """Attach permission-aware confidence to signature-qualified API hits."""
     permission_map = {
-        "location": {
-            "android.permission.ACCESS_FINE_LOCATION",
-            "android.permission.ACCESS_COARSE_LOCATION",
-            "android.permission.ACCESS_BACKGROUND_LOCATION",
-        },
+        "location": {"android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_BACKGROUND_LOCATION"},
         "contacts": {"android.permission.READ_CONTACTS", "android.permission.WRITE_CONTACTS"},
         "device_identifier": {"android.permission.READ_PHONE_STATE", "android.permission.READ_PHONE_NUMBERS"},
         "camera": {"android.permission.CAMERA"},
         "audio": {"android.permission.RECORD_AUDIO"},
     }
-    raw_hits = detect_hints(decoded_strings, hints)
-    result: Dict[str, List[Dict[str, object]]] = {}
-
-    for category, values in raw_hits.items():
-        permission_declared = bool(permission_map.get(category, set()) & declared_permissions)
-        confidence = "medium" if permission_declared else "low"
-        result[category] = [
+    return {
+        category: [
             {
                 "category": category,
                 "value": value,
-                "evidence_type": "string_match",
-                "confidence": confidence,
-                "permission_declared": permission_declared,
+                "evidence_type": "class_qualified_string_match",
+                "confidence": "medium" if permission_map.get(category, set()) & declared_permissions else "low",
+                "permission_declared": bool(permission_map.get(category, set()) & declared_permissions),
             }
             for value in values
         ]
-
-    return result
+        for category, values in detected.items()
+    }
 
 
 def build_json_report(
@@ -678,41 +863,101 @@ def build_json_report(
     manifest_status: Dict[str, object],
     component_status: Dict[str, object],
     components: List[Dict[str, object]],
+    config: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
-    permissions = [categorize_permission(permission) for permission in sorted(set(extract_permissions(badging)))]
+    config = config or load_static_config()
+    permission_categories = configured_permission_categories(config)
+    sdk_hints_config, sdk_metadata = configured_sdk_hints(config["sdk_signatures"])
+    permissions = [
+        categorize_permission(permission, permission_categories)
+        for permission in sorted(set(extract_permissions(badging)))
+    ]
     declared_permissions = {permission["name"] for permission in permissions}
-    sensitive_api_string_hints = detect_api_string_hints(
-        decoded_strings,
-        SENSITIVE_API_HINTS,
+    sensitive_api_string_hints = format_api_evidence(
+        detect_configured_api_hints(decoded_strings, config["sensitive_apis"]),
         declared_permissions,
     )
-    network_api_hints = detect_hints(decoded_strings, NETWORK_API_HINTS)
-    sdk_hints = detect_hints(decoded_strings, SDK_HINTS)
+    network_api_hints = detect_configured_api_hints(decoded_strings, config["network_apis"])
+    sdk_hints = detect_hints(decoded_strings, sdk_hints_config)
+    report = {
+        "schema_version": "1.0",
+        "analysis_status": (
+            "success"
+            if manifest_status["status"] == "success"
+            else "partial"
+        ),
+        "stages": {
+            "file_analysis": {
+                "status": "success",
+            },
+            "manifest_badging_analysis": manifest_status,
+            "manifest_xml_analysis": component_status,
+            "string_analysis": {
+                "status": "success",
+            },
+        },
+        "application": parse_application(badging, apk_path),
+        "permissions": permissions,
+        "components": components,
+        "component_summary": summarize_components(components),
+        "sensitive_api_string_hints": sensitive_api_string_hints,
+        "network_api_hints": network_api_hints,
+        "sdk_hints": sdk_hints,
+        "sdk_metadata": {name: sdk_metadata[name] for name in sdk_hints},
+        "findings": [asdict(finding) for finding in findings],
+    }
+    report["dynamic_analysis_handoff"] = build_dynamic_analysis_handoff(report)
+    return report
+
+
+def build_dynamic_analysis_handoff(report: Dict[str, object]) -> Dict[str, object]:
+    """Build a compact, stable index intended for consumption by dynamic analysis."""
+
+    findings = report.get("findings", [])
+    assert isinstance(findings, list)
+    domains: Dict[str, set[str]] = {}
+    urls: set[str] = set()
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        signal_type = str(item.get("signal_type", ""))
+        value = str(item.get("value", ""))
+        if signal_type == "domain" and value:
+            domains.setdefault(value.lower().rstrip("."), set()).add(str(item.get("name", "domain")))
+        elif signal_type == "url" and value:
+            urls.add(value)
+            host = urlparse(value).hostname
+            if host:
+                domains.setdefault(host.lower().rstrip("."), set()).add("embedded_url_candidate")
+
+    permissions = report.get("permissions", [])
+    assert isinstance(permissions, list)
+    sensitive_categories = {
+        str(item["category"])
+        for item in permissions
+        if isinstance(item, dict) and item.get("sensitive") and item.get("category")
+    }
+    api_hints = report.get("sensitive_api_string_hints", {})
+    if isinstance(api_hints, dict):
+        sensitive_categories.update(api_hints)
+
+    application = report.get("application", {})
+    sdk_metadata = report.get("sdk_metadata", {})
     return {
-    "analysis_status": (
-        "success"
-        if manifest_status["status"] == "success"
-        else "partial"
-    ),
-    "stages": {
-        "file_analysis": {
-            "status": "success",
-        },
-        "manifest_badging_analysis": manifest_status,
-        "manifest_xml_analysis": component_status,
-        "string_analysis": {
-            "status": "success",
-        },
-    },
-    "application": parse_application(badging, apk_path),
-    "permissions": permissions,
-    "components": components,
-    "component_summary": summarize_components(components),
-    "sensitive_api_string_hints": sensitive_api_string_hints,
-    "network_api_hints": network_api_hints,
-    "sdk_hints": sdk_hints,
-    "findings": [asdict(finding) for finding in findings],
-}
+        "schema_version": "1.0",
+        "package_name": application.get("package_name") if isinstance(application, dict) else None,
+        "expected_domains": [
+            {"domain": domain, "static_evidence": sorted(evidence)}
+            for domain, evidence in sorted(domains.items())
+        ],
+        "expected_urls": sorted(urls),
+        "sensitive_data_categories": sorted(sensitive_categories),
+        "sdk_ids": sorted(
+            str(item.get("id"))
+            for item in sdk_metadata.values()
+            if isinstance(item, dict) and item.get("id")
+        ) if isinstance(sdk_metadata, dict) else [],
+    }
 
 
 def summarize_components(components: List[Dict[str, object]]) -> Dict[str, Dict[str, int]]:
@@ -753,18 +998,26 @@ def analyze_static(
     apk_path: str,
     output_path: str = "logs/static_analysis.csv",
     json_output_path: Optional[str] = None,
+    config_dir: Path | str = CONFIG_DIR,
 ) -> List[StaticFinding]:
     apk_path = str(Path(apk_path).resolve())
 
-    if not os.path.exists(apk_path):
-        raise FileNotFoundError(
-            f"APK file not found: {apk_path}"
-        )
+    with static_analysis_stage("input_validation", apk_path):
+        if not os.path.exists(apk_path):
+            raise FileNotFoundError(f"APK file not found: {apk_path}")
+        if not os.path.isfile(apk_path):
+            raise ValueError(f"APK path is not a file: {apk_path}")
 
-    badging, manifest_status = aapt_badging(apk_path)
-    manifest_xml, component_status = get_manifest_xml(apk_path)
-    components = parse_manifest_components(manifest_xml)
-    package_name = extract_package(badging)
+    with static_analysis_stage("config_loading", apk_path):
+        config = load_static_config(config_dir)
+    permission_categories = configured_permission_categories(config)
+    sdk_hints, _ = configured_sdk_hints(config["sdk_signatures"])
+
+    with static_analysis_stage("manifest_analysis", apk_path):
+        badging, manifest_status = aapt_badging(apk_path)
+        manifest_xml, component_status = get_manifest_xml(apk_path)
+        components = parse_manifest_components(manifest_xml)
+        package_name = extract_package(badging)
     findings: List[StaticFinding] = []
 
     def add(
@@ -793,10 +1046,8 @@ def analyze_static(
             "aapt/aapt2 could not parse APK manifest",
         )
 
-    application = parse_application(
-        badging,
-        apk_path,
-    )
+    with static_analysis_stage("apk_metadata", apk_path):
+        application = parse_application(badging, apk_path)
 
     if application["sha256"]:
         add(
@@ -832,7 +1083,7 @@ def analyze_static(
     for permission in sorted(
         set(extract_permissions(badging))
     ):
-        category = categorize_permission(permission)
+        category = categorize_permission(permission, permission_categories)
 
         add(
             "permission",
@@ -860,8 +1111,9 @@ def analyze_static(
             ),
         )
 
-    raw_data = Path(apk_path).read_bytes()
-    string_records = extract_apk_strings(apk_path)
+    with static_analysis_stage("apk_string_extraction", apk_path):
+        raw_data = Path(apk_path).read_bytes()
+        string_records = extract_apk_strings(apk_path)
     decoded_strings = [record["text"] for record in string_records]
     joined_text = "\n".join(decoded_strings)
     joined_lower = joined_text.lower()
@@ -950,20 +1202,20 @@ def analyze_static(
             "APK strings",
         )
 
-    for category, hits in detect_hints(
+    for category, hits in detect_configured_api_hints(
         decoded_strings,
-        SENSITIVE_API_HINTS,
+        config["sensitive_apis"],
     ).items():
         add(
             "sensitive_api_string_hint",
             category,
             ";".join(hits),
-            "APK strings; evidence_type=string_match",
+            "APK strings; evidence_type=class_qualified_string_match",
         )
 
-    for category, hits in detect_hints(
+    for category, hits in detect_configured_api_hints(
         decoded_strings,
-        NETWORK_API_HINTS,
+        config["network_apis"],
     ).items():
         add(
             "network_api_hint",
@@ -974,7 +1226,7 @@ def analyze_static(
 
     for sdk_name, hits in detect_hints(
         decoded_strings,
-        SDK_HINTS,
+        sdk_hints,
     ).items():
         add(
             "sdk_hint",
@@ -984,47 +1236,32 @@ def analyze_static(
         )
 
     output = Path(output_path)
-    output.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with output.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-        writer = csv.writer(file)
-        writer.writerow(STATIC_COLUMNS)
-
-        for finding in findings:
-            writer.writerow(finding.row())
+    with static_analysis_stage("csv_report_write", apk_path):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(STATIC_COLUMNS)
+            for finding in findings:
+                writer.writerow(finding.row())
 
     if json_output_path:
         json_output = Path(json_output_path)
-        json_output.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        report = build_json_report(
-            apk_path,
-            badging,
-            findings,
-            decoded_strings,
-            manifest_status,
-            component_status,
-            components,
-        )
-
-        json_output.write_text(
-            json.dumps(
-                report,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        with static_analysis_stage("json_report_write", apk_path):
+            json_output.parent.mkdir(parents=True, exist_ok=True)
+            report = build_json_report(
+                apk_path,
+                badging,
+                findings,
+                decoded_strings,
+                manifest_status,
+                component_status,
+                components,
+                config,
+            )
+            json_output.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
         print(
             f"[Static] Saved JSON report to "
@@ -1044,8 +1281,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("apk", help="Path to APK file.")
     parser.add_argument("--output", default="logs/static_analysis.csv", help="CSV output path.")
     parser.add_argument("--json-output", default="logs/static_analysis.json", help="JSON report output path.")
+    parser.add_argument("--config-dir", default=str(CONFIG_DIR), help="Directory containing static-analysis YAML rules.")
     return parser.parse_args() 
 
-if __name__ == "__main__":
+def main() -> int:
     args = parse_args()
-    analyze_static(args.apk, args.output, args.json_output)
+    try:
+        analyze_static(args.apk, args.output, args.json_output, args.config_dir)
+    except StaticAnalysisStageError as exc:
+        print(f"[Static][ERROR] stage={exc.stage} apk={exc.apk_path}", file=sys.stderr)
+        print(f"[Static][ERROR] cause={type(exc.cause).__name__}: {exc.cause}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
