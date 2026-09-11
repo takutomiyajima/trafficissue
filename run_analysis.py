@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import os
 from pathlib import Path
 import shutil
@@ -49,6 +50,10 @@ class ProxyCaptureProbe:
     status: str = "unknown"
 
 
+class RequestedPackageMismatchError(ValueError):
+    """Raised when --package does not identify the supplied APK."""
+
+
 def default_log_paths(log_dir: Optional[Union[os.PathLike, str]] = None) -> LogPaths:
     """Return canonical repo-relative log paths used by capture, UI automation, and analysis."""
     base = Path(log_dir) if log_dir is not None else DEFAULT_LOG_DIR
@@ -60,6 +65,33 @@ def default_log_paths(log_dir: Optional[Union[os.PathLike, str]] = None) -> LogP
         static=base / "static_analysis.csv",
         metadata=base / "pcap_metadata.csv",
     )
+
+
+def package_from_static_report(report_path: Union[os.PathLike, str]) -> str:
+    """Read the APK package identity emitted by the static analyzer."""
+    try:
+        with open(report_path, encoding="utf-8") as report_file:
+            report = json.load(report_file)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return ""
+    handoff = report.get("dynamic_analysis_handoff", {})
+    if not isinstance(handoff, dict):
+        return ""
+    package = handoff.get("package_name")
+    return package.strip() if isinstance(package, str) else ""
+
+
+def resolve_target_package(requested_package: Optional[str], apk_package: str) -> str:
+    """Resolve the dynamic target while refusing an override for a different APK."""
+    requested_package = (requested_package or "").strip()
+    apk_package = apk_package.strip()
+    if requested_package and apk_package and requested_package != apk_package:
+        raise RequestedPackageMismatchError(
+            f"--package is {requested_package}, but the supplied APK declares {apk_package}. "
+            "The override would install one APK and launch/analyze another app. Use the APK's package "
+            f"('--package {apk_package}'), omit --package, or supply the intended APK."
+        )
+    return requested_package or apk_package
 
 
 
@@ -83,6 +115,53 @@ def adb(command: List[str], serial: Optional[str] = None, check: bool = True) ->
 
 def adb_shell(command: List[str], serial: Optional[str] = None, check: bool = True) -> subprocess.CompletedProcess:
     return adb(["shell", *command], serial=serial, check=check)
+
+
+def validate_adb_device(serial: Optional[str] = None) -> str:
+    """Return the selected device serial or raise an actionable preflight error."""
+    try:
+        proc = adb(["devices"], check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "adb was not found. Install Android SDK Platform Tools and add adb to PATH."
+        ) from exc
+
+    if proc.returncode != 0:
+        details = (proc.stderr or proc.stdout).strip()
+        suffix = f" Details: {details}" if details else ""
+        raise RuntimeError(f"Unable to query ADB devices.{suffix}")
+
+    devices = {}
+    for line in proc.stdout.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) >= 2:
+            devices[fields[0]] = fields[1]
+
+    if serial:
+        state = devices.get(serial)
+        if state is None:
+            raise RuntimeError(
+                f"ADB device '{serial}' was not found. Run 'adb devices' and pass an available serial with --serial."
+            )
+        if state != "device":
+            raise RuntimeError(
+                f"ADB device '{serial}' is {state!r}, not ready. Unlock/authorize the device, then run 'adb devices' again."
+            )
+        return serial
+
+    ready = [device_serial for device_serial, state in devices.items() if state == "device"]
+    if not ready:
+        reported = ", ".join(f"{device_serial} ({state})" for device_serial, state in devices.items())
+        suffix = f" Reported devices: {reported}." if reported else ""
+        raise RuntimeError(
+            "No ready Android device or emulator was found. Connect a USB-debugging device or start an emulator, "
+            "then confirm it appears as 'device' in 'adb devices'." + suffix
+        )
+    if len(ready) > 1:
+        raise RuntimeError(
+            "Multiple ready ADB devices were found: " + ", ".join(ready) + ". Select one with --serial SERIAL."
+        )
+    return ready[0]
 
 
 def initialize_traffic_log(filepath: str, reset: bool = False) -> None:
@@ -456,6 +535,15 @@ def main() -> int:
         print(f"[ERROR] APK file not found: {args.apk}", file=sys.stderr)
         return 1
 
+    try:
+        selected_serial = validate_adb_device(args.serial)
+    except RuntimeError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    if args.serial is None:
+        args.serial = selected_serial
+        print(f"[ADB] Using the only ready device: {selected_serial}")
+
     log_paths = default_log_paths(args.log_dir)
     ui_log_path = log_paths.ui
     traffic_log_path = log_paths.traffic
@@ -467,11 +555,20 @@ def main() -> int:
     if not args.skip_static:
         from static_analyzer import analyze_static
 
+        static_json_path = static_output_path.with_suffix(".json")
         analyze_static(
             args.apk,
             str(static_output_path),
-            str(static_output_path.with_suffix(".json")),
+            str(static_json_path),
         )
+        try:
+            args.package = resolve_target_package(
+                args.package,
+                package_from_static_report(static_json_path),
+            ) or None
+        except RequestedPackageMismatchError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
 
     mitm_proc = None if args.skip_capture else start_mitmproxy(
         args.listen_port,
@@ -509,7 +606,15 @@ def main() -> int:
             command.extend(["--package", args.package])
         if args.serial:
             command.extend(["--serial", args.serial])
-        run(command)
+        try:
+            run(command)
+        except subprocess.CalledProcessError as exc:
+            print(
+                f"[ERROR] UI automation failed with exit status {exc.returncode}. "
+                "Review the preceding auto_runner error for the cause.",
+                file=sys.stderr,
+            )
+            return 1
     finally:
         restore_device_proxy(proxy_state, serial=args.serial)
         stop_process(mitm_proc)
@@ -531,24 +636,28 @@ def main() -> int:
         f"tunnels={capture_health['connect_tunnels_observed']}"
     )
 
-    from analyze_logs import analyze
+    from analyze_logs import AnalysisTargetMismatchError, analyze
 
-    analyze(
-        ui_path=str(ui_log_path),
-        traffic_path=str(traffic_log_path),
-        output_path=str(risk_results_path),
-        window_seconds=args.window,
-        allowed_domains=args.allowed_domains,
-        include_system_probes=args.include_system_probes,
-        target_package=args.package or "",
-        metadata_path=str(metadata_log_path) if metadata_log_path.exists() else "",
-        static_report_path=(
-            str(static_output_path.with_suffix(".json"))
-            if not args.skip_static and static_output_path.with_suffix(".json").exists()
-            else ""
-        ),
-        integrated_output_path=str(Path(args.log_dir).resolve() / "integrated_analysis.json"),
-    )
+    try:
+        analyze(
+            ui_path=str(ui_log_path),
+            traffic_path=str(traffic_log_path),
+            output_path=str(risk_results_path),
+            window_seconds=args.window,
+            allowed_domains=args.allowed_domains,
+            include_system_probes=args.include_system_probes,
+            target_package=args.package or "",
+            metadata_path=str(metadata_log_path) if metadata_log_path.exists() else "",
+            static_report_path=(
+                str(static_output_path.with_suffix(".json"))
+                if not args.skip_static and static_output_path.with_suffix(".json").exists()
+                else ""
+            ),
+            integrated_output_path=str(Path(args.log_dir).resolve() / "integrated_analysis.json"),
+        )
+    except AnalysisTargetMismatchError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
     print(f"[DONE] Results are available in {risk_results_path}")
     return 0
 

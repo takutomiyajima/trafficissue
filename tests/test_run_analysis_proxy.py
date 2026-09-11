@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -10,6 +11,73 @@ import run_analysis
 
 
 class RunAnalysisProxyTest(unittest.TestCase):
+    def test_package_from_static_report_reads_handoff_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "static_analysis.json"
+            report_path.write_text(
+                json.dumps({"dynamic_analysis_handoff": {"package_name": "com.example.from_apk"}}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(run_analysis.package_from_static_report(report_path), "com.example.from_apk")
+
+    def test_resolve_target_package_rejects_override_for_another_apk(self):
+        with self.assertRaisesRegex(
+            run_analysis.RequestedPackageMismatchError,
+            r"com\.example\.requested.*com\.example\.from_apk",
+        ):
+            run_analysis.resolve_target_package("com.example.requested", "com.example.from_apk")
+
+    def test_resolve_target_package_uses_apk_identity_when_override_is_omitted(self):
+        self.assertEqual(
+            run_analysis.resolve_target_package(None, "com.example.from_apk"),
+            "com.example.from_apk",
+        )
+
+    @patch("run_analysis.adb")
+    def test_validate_adb_device_selects_only_ready_device(self, mock_adb):
+        mock_adb.return_value = run_analysis.subprocess.CompletedProcess(
+            ["adb", "devices"], 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+        )
+
+        self.assertEqual(run_analysis.validate_adb_device(), "emulator-5554")
+        mock_adb.assert_called_once_with(["devices"], check=False)
+
+    @patch("run_analysis.adb")
+    def test_validate_adb_device_explains_when_no_device_is_connected(self, mock_adb):
+        mock_adb.return_value = run_analysis.subprocess.CompletedProcess(
+            ["adb", "devices"], 0, stdout="List of devices attached\n\n", stderr=""
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "No ready Android device"):
+            run_analysis.validate_adb_device()
+
+    @patch("run_analysis.adb")
+    def test_validate_adb_device_reports_unauthorized_selected_device(self, mock_adb):
+        mock_adb.return_value = run_analysis.subprocess.CompletedProcess(
+            ["adb", "devices"], 0, stdout="List of devices attached\nphone-1\tunauthorized\n", stderr=""
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "unauthorized"):
+            run_analysis.validate_adb_device("phone-1")
+
+    @patch("run_analysis.adb")
+    def test_validate_adb_device_requires_serial_for_multiple_devices(self, mock_adb):
+        mock_adb.return_value = run_analysis.subprocess.CompletedProcess(
+            ["adb", "devices"],
+            0,
+            stdout="List of devices attached\nemulator-5554\tdevice\nphone-1\tdevice\n",
+            stderr="",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "--serial SERIAL"):
+            run_analysis.validate_adb_device()
+
+    @patch("run_analysis.adb", side_effect=FileNotFoundError)
+    def test_validate_adb_device_reports_missing_adb(self, mock_adb):
+        with self.assertRaisesRegex(RuntimeError, "Platform Tools"):
+            run_analysis.validate_adb_device()
+
     def test_default_log_paths_are_derived_from_single_log_dir(self):
         paths = run_analysis.default_log_paths()
 
