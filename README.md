@@ -95,7 +95,7 @@ python static_analyzer.py path/to/app.apk --config-dir config
 
 軽量構成のため、現段階ではaapt/aapt2・apkanalyzerとAPKメンバーごとの文字列を中心に解析します。検出したAPIは実呼び出しではなく文字列証拠であり、権限の宣言状況に応じて確度を付けます。本文送信や実行時挙動は断定せず、動的解析ログと組み合わせて確認優先度を上げる設計です。解析ツールの一部が利用できない場合は、JSONの `analysis_status` と `stages` に部分成功と失敗理由を残します。
 
-JSONには、動的解析が読み込みやすいバージョン付きの `dynamic_analysis_handoff` を出力します。ここには対象パッケージ、静的に見つかった通信先・URL、センシティブデータカテゴリ、SDK IDを正規化して格納します。`analyze_logs.py --static-report` で読み込むと、動的に観測した各通信へ `static_match`、`static_evidence`、`static_app_data_categories` が追加されます。最後の列はアプリ全体の静的候補であり、その通信先へ実際に送信したデータを意味しません。`run_analysis.py` ではこの連携を自動的に行います。
+JSONには、動的解析が読み込みやすいバージョン付きの `dynamic_analysis_handoff` を出力します。ここには対象パッケージ、APKのSHA-256、静的に見つかった通信先・URL、センシティブデータカテゴリ、SDK IDを正規化して格納します。`analyze_logs.py --static-report` で読み込むと、まずUIのlaunchイベント（または明示した`--target-package`）と静的解析のpackage nameが一致することを検証します。不一致または動的ログの対象を特定できない場合は処理を停止し、異なるアプリの根拠を統合しません。一致した場合だけ、動的に観測した各通信へ `static_match`、`static_evidence`、`static_app_data_categories` が追加されます。最後の列はアプリ全体の静的候補であり、その通信先へ実際に送信したデータを意味しません。`run_analysis.py` ではこの連携を自動的に行います。
 
 ## 静的・動的解析の統合レポート
 

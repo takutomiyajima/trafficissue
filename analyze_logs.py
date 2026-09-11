@@ -117,6 +117,64 @@ class StaticHandoffLoadError(ValueError):
         super().__init__(f"static handoff failed at {stage} for {report_path}: {cause}")
 
 
+class AnalysisTargetMismatchError(ValueError):
+    """Raised before integration when static and dynamic app identities differ."""
+
+
+def _dynamic_package_identity(ui_df, metadata_df, target_package: str) -> str:
+    """Return the best package identity recorded for the dynamic run.
+
+    A launch event is authoritative because later UI events may legitimately open
+    Android or browser activities owned by another package.
+    """
+    explicit = _clean(target_package)
+    if explicit:
+        return explicit
+
+    if not ui_df.empty:
+        launch_rows = ui_df[ui_df["action"].map(lambda value: _clean(value).lower() == "launch")]
+        for _, row in launch_rows.iterrows():
+            # auto_runner records the package it attempted to launch in
+            # element_text. The current screen can briefly still be Launcher or
+            # Settings while Android is bringing the app to the foreground.
+            package = _clean(row.get("element_text")) or extract_app_package(row.get("screen"))
+            if package:
+                return package
+
+        packages = {
+            extract_app_package(value)
+            for value in ui_df["screen"]
+            if extract_app_package(value)
+        }
+        if len(packages) == 1:
+            return packages.pop()
+
+    if not metadata_df.empty and "package" in metadata_df.columns:
+        packages = {_clean(value) for value in metadata_df["package"] if _clean(value)}
+        if len(packages) == 1:
+            return packages.pop()
+    return ""
+
+
+def _verify_analysis_target(static_handoff: dict, dynamic_package: str) -> None:
+    """Prevent evidence from different applications being merged."""
+    static_package = _clean(static_handoff.get("package_name"))
+    if not static_package:
+        return
+    if not dynamic_package:
+        raise AnalysisTargetMismatchError(
+            "Cannot integrate the static report because the dynamic logs do not identify "
+            f"their application package (static package: {static_package}). Record a launch "
+            "event or pass --target-package."
+        )
+    if dynamic_package != static_package:
+        raise AnalysisTargetMismatchError(
+            "Static/dynamic application mismatch: "
+            f"static package is {static_package}, but dynamic package is {dynamic_package}. "
+            "The reports were not integrated; use logs from the same APK/run."
+        )
+
+
 def _clean(value: object) -> str:
     """Return a normalized string for CSV cells that may be NaN/None."""
     if value is None or value != value:
@@ -490,6 +548,24 @@ def analyze(
         else pd.DataFrame(columns=METADATA_COLUMNS)
     )
 
+    dynamic_package = _dynamic_package_identity(ui_df, metadata_df, target_package)
+    try:
+        _verify_analysis_target(static_handoff, dynamic_package)
+    except AnalysisTargetMismatchError:
+        # Do not leave a report from an older run where it could be mistaken for
+        # the result of this rejected integration.
+        for stale_path in (output_path, integrated_output_path):
+            if stale_path:
+                try:
+                    os.remove(stale_path)
+                except FileNotFoundError:
+                    pass
+        raise
+    if static_handoff:
+        # This value is added only after the equality check above succeeds.  The
+        # integrated report can therefore state which dynamic identity was used.
+        static_handoff = {**static_handoff, "verified_dynamic_package": dynamic_package}
+
     ui_df["timestamp"] = pd.to_numeric(ui_df["timestamp"], errors="coerce")
     traffic_df["timestamp"] = pd.to_numeric(traffic_df["timestamp"], errors="coerce")
     metadata_df["timestamp"] = pd.to_numeric(metadata_df["timestamp"], errors="coerce")
@@ -737,4 +813,8 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         print(f"[Analyzer][ERROR] cause={exc.cause}", file=sys.stderr)
+        raise SystemExit(1)
+    except AnalysisTargetMismatchError as exc:
+        print(f"[Analyzer][ERROR] stage=target_identity_validation", file=sys.stderr)
+        print(f"[Analyzer][ERROR] cause={exc}", file=sys.stderr)
         raise SystemExit(1)

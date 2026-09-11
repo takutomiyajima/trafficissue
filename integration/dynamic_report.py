@@ -250,7 +250,17 @@ def build_integrated_report(
             "This report supports developer review and does not automatically determine "
             "whether behavior matches development intent or whether the app is safe."
         ),
-        "application": {"package_name": handoff.get("package_name")},
+        "application": {
+            "package_name": handoff.get("package_name"),
+            "apk_sha256": handoff.get("apk_sha256"),
+            "dynamic_package_name": handoff.get("verified_dynamic_package"),
+            "identity_status": (
+                "verified"
+                if handoff.get("package_name")
+                and handoff.get("package_name") == handoff.get("verified_dynamic_package")
+                else "not_verified"
+            ),
+        },
         "summary": {"status_counts": status_counts},
         "observations": observations,
         "evidence": evidence,
