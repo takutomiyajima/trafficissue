@@ -41,13 +41,15 @@ python -m pip install pandas mitmproxy streamlit
 
 Android SDKを使う場合は、`adb`、`aapt`または`aapt2`、`apkanalyzer`へPATHを通すか、`ANDROID_HOME` / `ANDROID_SDK_ROOT`を設定してください。静的解析ツールの一部がなくても文字列解析は実行されますが、結果は`partial`になり、取得できるManifest情報が減ります。
 
+`auto_runner.py`はPATHに加え、`ANDROID_HOME`、`ANDROID_SDK_ROOT`、macOSの`~/Library/Android/sdk`、Linuxの`~/Android/Sdk`以下にある最新のBuild Toolsも検索します。APKを再インストールした際はインストール済みpackage一覧に差分が出ないため、`--package`を省略するには`aapt`または`aapt2`でAPKのpackage nameを読み取れる環境が必要です。一括実行の`run_analysis.py`は静的解析で判明したpackage nameを`auto_runner.py`へ明示的に引き渡します。
+
 ADB接続は次のコマンドで確認できます。
 
 ```bash
 adb devices
 ```
 
-複数端末が表示される場合は、以降の一括解析で`--serial`を指定します。
+端末の状態が`device`になることを確認してください。何も表示されない場合はUSBデバッグ端末を接続するかEmulatorを起動し、`unauthorized`の場合は端末をロック解除してUSBデバッグの許可ダイアログを承認します。複数端末が表示される場合は、以降の一括解析で`--serial`を指定します。一括解析は処理開始前にこの状態を検査し、利用可能な端末がなければ対処方法を示して終了します。
 
 ## 3. 最も簡単な使い方：一括解析
 
@@ -60,7 +62,7 @@ python run_analysis.py path/to/app.apk \
   --log-dir logs/experiment-001
 ```
 
-パッケージ名をAPKから取得できる場合、`--package`は省略できます。複数端末がある場合は次のように指定します。
+パッケージ名をAPKから取得できる場合、`--package`は省略できます。指定する場合はAPKのManifestにあるpackage nameと一致している必要があります。一致しない名前を指定すると、インストールしたAPKとは別の既存アプリを操作する危険があるため、一括解析は静的解析直後かつmitmproxy・UI操作の開始前に終了します。複数端末がある場合は次のように指定します。
 
 ```bash
 python run_analysis.py path/to/app.apk \

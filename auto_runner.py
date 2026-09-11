@@ -5,8 +5,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
@@ -36,15 +38,41 @@ def list_installed_packages(serial: Optional[str] = None) -> Set[str]:
     return packages
 
 
+def find_android_tool(tool_name: str) -> Optional[str]:
+    """Find an Android SDK tool on PATH or in standard SDK locations."""
+    path_tool = shutil.which(tool_name)
+    if path_tool:
+        return path_tool
+
+    sdk_roots = [
+        os.environ.get("ANDROID_HOME"),
+        os.environ.get("ANDROID_SDK_ROOT"),
+        str(Path.home() / "Library" / "Android" / "sdk"),
+        str(Path.home() / "Android" / "Sdk"),
+    ]
+    for sdk_root in filter(None, sdk_roots):
+        build_tools = Path(sdk_root) / "build-tools"
+        candidates = sorted(
+            build_tools.glob(f"*/{tool_name}"),
+            key=lambda candidate: (
+                tuple(int(part) for part in re.findall(r"\d+", candidate.parent.name)),
+                candidate.parent.name,
+            ),
+            reverse=True,
+        )
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return None
+
+
 def extract_package_with_android_tools(apk_path: str) -> Optional[str]:
     # Prefer Android SDK tools when available. They understand binary AndroidManifest.xml.
-    for tool, command in (
-        ("aapt", ["aapt", "dump", "badging", apk_path]),
-        ("aapt2", ["aapt2", "dump", "badging", apk_path]),
-    ):
-        if not shutil.which(tool):
+    for tool in ("aapt", "aapt2"):
+        tool_path = find_android_tool(tool)
+        if not tool_path:
             continue
-        proc = run_command(command, check=False)
+        proc = run_command([tool_path, "dump", "badging", apk_path], check=False)
         match = re.search(r"package: name='([^']+)'", proc.stdout)
         if match:
             return match.group(1)
@@ -323,4 +351,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(1)
