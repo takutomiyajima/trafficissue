@@ -946,6 +946,7 @@ def build_dynamic_analysis_handoff(report: Dict[str, object]) -> Dict[str, objec
     return {
         "schema_version": "1.0",
         "package_name": application.get("package_name") if isinstance(application, dict) else None,
+        "apk_sha256": application.get("sha256") if isinstance(application, dict) else None,
         "expected_domains": [
             {"domain": domain, "static_evidence": sorted(evidence)}
             for domain, evidence in sorted(domains.items())

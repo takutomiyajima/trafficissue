@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from analyze_logs import (
+    AnalysisTargetMismatchError,
     analyze,
     classify_risk,
     detect_sensitive_url_fields,
@@ -24,6 +25,85 @@ def has_pandas() -> bool:
 
 
 class AnalyzeLogsTest(unittest.TestCase):
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_refuses_to_integrate_static_and_dynamic_logs_from_different_packages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            output_path = base / "risk_results.csv"
+            integrated_path = base / "integrated_analysis.json"
+            static_path = base / "static_analysis.json"
+            output_path.write_text("stale risk report", encoding="utf-8")
+            integrated_path.write_text("stale integrated report", encoding="utf-8")
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E000,100.0,com.example.dynamic/.MainActivity,launch,com.example.dynamic\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text(
+                "timestamp,scheme,domain,method,url,status_code\n"
+                "101,https,www.google.com,CONNECT,www.google.com:443,\n",
+                encoding="utf-8",
+            )
+            static_path.write_text(
+                json.dumps({"dynamic_analysis_handoff": {
+                    "schema_version": "1.0",
+                    "package_name": "com.example.static",
+                    "apk_sha256": "abc123",
+                    "expected_domains": [{"domain": "www.google.com", "static_evidence": ["hardcoded_domain"]}],
+                }}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                AnalysisTargetMismatchError,
+                r"com\.example\.static.*com\.example\.dynamic",
+            ):
+                analyze(
+                    str(ui_path),
+                    str(traffic_path),
+                    str(output_path),
+                    static_report_path=str(static_path),
+                    integrated_output_path=str(integrated_path),
+                )
+
+            self.assertFalse(output_path.exists())
+            self.assertFalse(integrated_path.exists())
+
+    @unittest.skipIf(not has_pandas(), "pandas is not installed in this environment")
+    def test_integrated_report_records_verified_package_and_apk_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ui_path = base / "ui_events.csv"
+            traffic_path = base / "traffic_logs.csv"
+            output_path = base / "risk_results.csv"
+            integrated_path = base / "integrated_analysis.json"
+            static_path = base / "static_analysis.json"
+            ui_path.write_text(
+                "event_id,timestamp,screen,action,element_text\n"
+                "E000,100.0,com.example.app/.MainActivity,launch,com.example.app\n",
+                encoding="utf-8",
+            )
+            traffic_path.write_text("timestamp,scheme,domain,method,url,status_code\n", encoding="utf-8")
+            static_path.write_text(
+                json.dumps({"dynamic_analysis_handoff": {
+                    "schema_version": "1.0", "package_name": "com.example.app",
+                    "apk_sha256": "abc123", "expected_domains": [],
+                }}),
+                encoding="utf-8",
+            )
+
+            analyze(
+                str(ui_path), str(traffic_path), str(output_path),
+                static_report_path=str(static_path), integrated_output_path=str(integrated_path),
+            )
+
+            application = json.loads(integrated_path.read_text(encoding="utf-8"))["application"]
+            self.assertEqual(application["identity_status"], "verified")
+            self.assertEqual(application["dynamic_package_name"], "com.example.app")
+            self.assertEqual(application["apk_sha256"], "abc123")
+
     def test_invalid_static_report_identifies_json_parse_stage_and_location(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "broken.json"

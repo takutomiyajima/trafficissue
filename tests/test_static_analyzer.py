@@ -108,6 +108,7 @@ class StaticAnalyzerTest(unittest.TestCase):
             handoff = report["dynamic_analysis_handoff"]
             self.assertEqual(handoff["schema_version"], "1.0")
             self.assertEqual(handoff["package_name"], "com.example.app")
+            self.assertEqual(handoff["apk_sha256"], report["application"]["sha256"])
             self.assertIn(
                 "maps.googleapis.com",
                 {item["domain"] for item in handoff["expected_domains"]},
