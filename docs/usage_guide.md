@@ -98,6 +98,32 @@ python run_analysis.py path/to/app.apk \
 
 一括解析で問題が起きた場合や、Wireshark・PCAPdroidと比較する場合は、以下の処理を個別に実行します。
 
+### 4.0 通信内容を確認する補助実験用debug版（任意）
+
+これは**P00〜P04の主実験には使用しません**。評価対象の生成済みAPKを変更せず、Androidソースから
+別の通信確認用debug APKをビルドできる場合だけ使用します。
+
+```bash
+python prepare_debug_proxy.py path/to/android-project/app \
+  ~/.mitmproxy/mitmproxy-ca-cert.pem
+```
+
+このコマンドはPEMをDERへ変換し、次の3ファイルだけをアプリモジュールの`src/debug`以下に作成します。
+
+- `res/raw/mitmproxy_ca.cer`
+- `res/xml/network_security_config.xml`
+- `AndroidManifest.xml`
+
+設定はシステムCAに加えて、`debuggable=true`のときだけmitmproxy CAを信頼し、平文HTTPは許可しません。
+既存ファイルと内容が異なる場合は安全のため停止します。内容を確認したうえで置換するときだけ
+`--force`を指定してください。既存debug Manifestに別の設定があるプロジェクトでは、自動置換せず、
+必要な属性を手動でマージすることを推奨します。
+
+生成後は通常のGradle手順（例: `./gradlew assembleDebug`）でdebug版をビルドします。補助実験の結果には、
+元のAPKとは異なる成果物であること、CA設定を追加したこと、APKのSHA-256を記録してください。
+設定を外すには上記3ファイルを削除します。ツールはAPKの書き換え、端末へのCAインストール、証明書
+ピンニングの解除は行いません。証明書ピンニング、QUIC、プロキシ非対応通信は別途観測できない場合があります。
+
 ### 4.1 APK静的解析
 
 ```bash
