@@ -66,6 +66,18 @@ streamlit run app.py
 - 今後はVPN/pcap型通信取得と静的解析を組み合わせ、通信本文ではなく通信先メタデータとUI操作の対応付けを中心に進める。
 - mitmproxyは、取れた通信を詳細解析する補助として利用する。
 
+## 通信確認用デバッグ版の作成
+
+Androidアプリのソースを別途用意できる場合は、`prepare_debug_proxy.py`でmitmproxy CAを信頼する設定を
+`src/debug`だけへ生成できます。P00〜P04の評価APKを変更する機能ではなく、補助実験専用です。
+
+```bash
+python prepare_debug_proxy.py path/to/project/app ~/.mitmproxy/mitmproxy-ca-cert.pem
+```
+
+既存のdebug設定は既定で上書きしません。生成内容、ビルド時の確認事項、削除方法は
+[`docs/usage_guide.md`](docs/usage_guide.md)を参照してください。
+
 ## APK静的解析MVP
 
 添付資料の「Androidアプリ公開前プライバシー確認支援システム」に対応する最小構成として、APKの静的解析レポート生成を追加しています。目的は危険アプリの断定ではなく、公開前に開発者が確認すべき候補を根拠付きで提示することです。
