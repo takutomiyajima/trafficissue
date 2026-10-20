@@ -1,6 +1,7 @@
 import re
 from urllib.parse import urlsplit, urlunsplit
 from .validation import CheckError, host
+from .report_validation import validate_report
 
 ADAPTER_VERSION = 'trafficissue-static-1.0'
 DOMAINS = ('permissions', 'endpoints', 'cleartext_configuration', 'sdk_inclusion')
@@ -21,6 +22,7 @@ def normalize_url(raw):
 
 
 def adapt(report):
+    validate_report(report)
     if not isinstance(report, dict):
         raise CheckError('UNSUPPORTED_SCHEMA', 'static report must be an object')
     version = report.get('schema_version')
@@ -52,11 +54,16 @@ def adapt(report):
         raise CheckError('UNSUPPORTED_SCHEMA', 'unsupported intentcheck extraction extension')
     ext = extension or {}
     coverage = {d: False for d in DOMAINS}
+    coverage_evidence = {}
     for d in ('permissions', 'endpoints'):
         s = ext.get('stages', {}).get(d, {})
         coverage[d] = s.get('status') == 'success' and s.get('coverage') == 'complete_in_scope'
         if s:
             stages.append(dict(s, stage_id=d))
+        if coverage[d]:
+            coverage_evidence[d] = add('extraction_scope', s, s,
+                '/intentcheck_extraction/stages/'+d, d, 'verified_structure',
+                method='extractor_scope_record')
     if 'permissions' not in report:
         coverage['permissions'] = False
     else:
@@ -106,4 +113,4 @@ def adapt(report):
             'url_candidates': sorted(urls.values(), key=lambda x: x['url']), 'reference_only': references,
             'excluded_occurrences': excluded, 'http_configuration': ext.get('http_configuration', {}),
             'sdk_hints': report.get('sdk_hints', {}), 'sdk_metadata': report.get('sdk_metadata', {}),
-            'coverage': coverage, 'stages': stages, 'warnings': warnings}
+            'coverage': coverage, 'coverage_evidence': coverage_evidence, 'stages': stages, 'warnings': warnings}

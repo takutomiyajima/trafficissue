@@ -11,11 +11,12 @@ import time
 import uuid
 from . import __version__
 from .adapter import ADAPTER_VERSION
+from .report_validation import validate_report
 from .comparison import compare
 from .extractor import extract, LIMITS, inspect_apk
 from .http_policy import SUPPORT_MATRIX
 from .matcher import match_report, RULE_VERSION, REGISTRY_HASH
-from .reporting import dump, new_output, write_result, code
+from .reporting import dump, output_transaction, write_result, code
 from .validation import CheckError, load_json, validate_intent, file_hash, digest
 
 
@@ -54,17 +55,17 @@ def execute(args):
             result = compare(before, after, args.episode_id)
         except (KeyError, TypeError, ValueError) as e:
             raise CheckError('INCOMPARABLE_RUNS', 'invalid result structure: '+str(e)) from e
-        out = new_output(args.out)
-        dump(out/'comparison.json', result)
-        (out/'comparison.md').write_text('# 修正前後比較\n\n'+code(json.dumps(result, ensure_ascii=False, indent=2))+'\n', encoding='utf-8')
+        with output_transaction(args.out) as out:
+            dump(out/'comparison.json', result)
+            (out/'comparison.md').write_text('# 修正前後比較\n\n'+code(json.dumps(result, ensure_ascii=False, indent=2))+'\n', encoding='utf-8')
         return 3 if result['partial'] else 0
     if args.command == 'join-reviews':
         result, reviews = load_json(args.result), load_json(args.reviews)
         ids = {f['finding_id'] for f in result['findings']}
         if not isinstance(reviews, list) or any(not isinstance(r, dict) or r.get('finding_id') not in ids or r.get('run_id') != result['run_id'] for r in reviews):
             raise CheckError('INVALID_REVIEW', 'each review must reference this run_id and an existing finding_id')
-        out = new_output(args.out)
-        dump(out/'reviews.json', {'run_id': result['run_id'], 'result_sha256': file_hash(args.result), 'reviews': reviews})
+        with output_transaction(args.out) as out:
+            dump(out/'reviews.json', {'run_id': result['run_id'], 'result_sha256': file_hash(args.result), 'reviews': reviews})
         return 0
     if args.command in ('match', 'analyze') and args.config:
         config = load_json(args.config)
@@ -90,6 +91,7 @@ def execute(args):
         else:
             report = load_json(args.static_report)
             source_bytes = Path(args.static_report).read_bytes()
+        validate_report(report)
         if not isinstance(report, dict) or not isinstance(report.get('application'), dict):
             raise CheckError('UNSUPPORTED_SCHEMA', 'application object required')
         application = dict(report['application'])
@@ -131,13 +133,8 @@ def execute(args):
                'limits': LIMITS, 'provenance': provenance, 'intent_sha256': file_hash(args.intent),
                'apk_sha256': application.get('sha256'), 'apk_size_bytes': Path(args.apk).stat().st_size if args.apk else None,
                'outcome': 'partial' if partial else 'complete'}
-        out = new_output(args.out)
-        try:
+        with output_transaction(args.out) as out:
             write_result(out, result, run, source_bytes)
-        except Exception:
-            # Leave an explicit incomplete marker; never let partial output look like a completed run.
-            (out/'INCOMPLETE').touch()
-            raise
         print(f'{run_id}: '+('partial' if partial else 'complete')+f'; results: {out}')
         return 3 if partial else 0
 

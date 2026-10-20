@@ -1,4 +1,5 @@
 import csv
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from .validation import CheckError
@@ -18,6 +19,16 @@ def new_output(path):
     except FileExistsError as e:
         raise CheckError('OUTPUT_EXISTS', 'output directory already exists: '+str(p)) from e
     return p
+
+
+@contextmanager
+def output_transaction(path):
+    """Mark all output incomplete before writing; clear only after every write succeeds."""
+    out = new_output(path)
+    marker = out/'INCOMPLETE'
+    marker.touch()
+    yield out
+    marker.unlink()
 
 
 def code(value):

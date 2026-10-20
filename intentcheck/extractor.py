@@ -2,7 +2,6 @@
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,6 +9,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from .validation import CheckError, load_json, file_hash
 from .http_policy import ANDROID, xml_root
+from static_analyzer import find_apkanalyzer, find_android_tool
 
 LIMITS = {'apk_bytes': 300*1024**2, 'json_bytes': 100*1024**2,
           'uncompressed_bytes': 2*1024**3, 'members': 100000,
@@ -71,13 +71,19 @@ def extract(apk, workdir):
     report = load_json(report_path)
     ext = {'version': '1.0', 'stages': {}, 'url_occurrences': [], 'http_configuration': {}}
     report['intentcheck_extraction'] = ext
-    analyzer = shutil.which('apkanalyzer')
+    analyzer = find_apkanalyzer()
     ext['tool_fingerprints'] = {}
     for name in ('aapt', 'aapt2', 'apkanalyzer'):
-        executable = shutil.which(name)
+        executable = analyzer if name == 'apkanalyzer' else find_android_tool(name)
         if executable:
             ext['tool_fingerprints'][name] = {'executable_sha256': file_hash(executable)}
-    ext['tool_fingerprints']['static_analyzer.py'] = {'source_sha256': file_hash(root/'static_analyzer.py')}
+    for source in ('static_analyzer.py', 'intentcheck/extractor.py'):
+        ext['tool_fingerprints'][source] = {'source_sha256': file_hash(root/source)}
+    if analyzer:
+        # apkanalyzer is a launcher; fingerprint its SDK Java implementation too.
+        sdk_tools = Path(analyzer).resolve().parent.parent
+        for jar in sorted((sdk_tools/'lib').rglob('*.jar')):
+            ext['tool_fingerprints']['apkanalyzer:'+str(jar.relative_to(sdk_tools))] = {'source_sha256': file_hash(jar)}
     manifest = ''
     if analyzer:
         code, manifest, _ = run_tool([analyzer, 'manifest', 'print', apk])

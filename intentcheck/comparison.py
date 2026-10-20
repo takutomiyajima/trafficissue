@@ -16,10 +16,14 @@ def compare(before, after, episode_id):
               (before['intent']['version'], after['intent']['version']),
               (before['intent']['sha256'], after['intent']['sha256']),
               (before['application'].get('package_name'), after['application'].get('package_name'))]
-    for f in ('adapter', 'rule_version', 'registry_hash', 'extractor_version', 'http_support_matrix'):
+    for run in (before, after):
+        fingerprints = run['provenance'].get('tool_fingerprints')
+        if not isinstance(fingerprints, dict) or not fingerprints:
+            raise CheckError('INCOMPARABLE_RUNS', 'tool/extractor fingerprints are missing; reanalyze both inputs with recorded fingerprints')
+    for f in ('adapter', 'rule_version', 'registry_hash', 'extractor_version', 'http_support_matrix', 'tool_fingerprints'):
         checks.append((before['provenance'].get(f), after['provenance'].get(f)))
     if any(a != b for a,b in checks) or not before['application'].get('package_name'):
-        raise CheckError('INCOMPARABLE_RUNS', 'intent, package, adapter, extractor, HTTP support matrix or rules differ; explicit cross-package episodes are not supported')
+        raise CheckError('INCOMPARABLE_RUNS', 'intent, package, adapter, extractor, HTTP support matrix, fingerprints or rules differ; explicit cross-package episodes are not supported')
     differences = []
     def facts(run, domain):
         f = run['facts']
