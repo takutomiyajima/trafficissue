@@ -4,6 +4,135 @@ UI操作ログと通信観測ログを時刻で対応付け、Androidアプリ�
 
 セットアップ、一括解析、個別実行、出力の読み方、トラブルシューティングを含む詳細な手順は、[`docs/usage_guide.md`](docs/usage_guide.md)を参照してください。
 
+## 開発意図とAPKの照合（intentcheck）
+
+APKの解析結果から、開発者が**独立して記録した構造化方針**への抵触を調べるCLIを追加しました。
+既存の通信観測・静的解析とは別の入口です。解析で見つかったドメインを許可リストへ自動転記せず、
+元要求の自由文も自動解釈しません。実通信、情報漏えい、アプリ全体の安全性は判定しません。
+
+### 使い方
+
+Python 3.10以降と既存の依存関係を使用します。JSON取込・照合自体には追加の外部パッケージは不要です。
+APK解析は既存の`static_analyzer.py`を再利用し、Manifest／NSCのバイナリXMLには`apkanalyzer`を使用します。
+クラウド環境では`source /workspace/trafficissue-tools/activate.sh`で導入済みの環境を有効化できます。
+
+まず[意図ファイルの例](examples/intentcheck/intent.json)をコピーし、実際の要求に合わせてID・版・記録時刻・方針を編集してください。
+この例は説明用の架空方針であり、既存APKの生成前要求を再現したものではありません。
+
+```bash
+# 構文・型・未知キー・矛盾・登録SDK IDなどを検証
+python -m intentcheck validate-intent --intent examples/intentcheck/intent.json
+
+# 既存の静的JSONを読み込む。過去のレポートや意図を上書きしない新規出力先を指定
+python -m intentcheck match --intent examples/intentcheck/intent.json \
+  --static-report logs/static_analysis.json --case-id C001 --out /tmp/intentcheck-C001
+
+# APK自体は実行せず、静的解析から照合まで行う
+python -m intentcheck analyze --intent examples/intentcheck/intent.json \
+  --apk /absolute/path/app.apk --case-id C002 --out /tmp/intentcheck-C002
+
+# 同じ意図ファイル・ルール・解析方式で作成した修正前後の結果を比較
+python -m intentcheck compare --before /tmp/intentcheck-before/result.json \
+  --after /tmp/intentcheck-after/result.json --episode-id EP001 --out /tmp/intentcheck-EP001
+
+# 既存機能を含むテスト。実APKテストのみ環境変数未設定時にskip
+python -m unittest discover -s tests -v
+```
+
+`match`に`--apk`も指定した場合は実体のSHA-256とレポート記録を照合し、欠落・不一致を拒否します。
+JSONだけなら`identity_verification=report_only`であり、APK実体を検証したことにはしません。
+意図JSONは4領域を必須とし、指定しない領域は`{"mode":"unspecified"}`と明記します。
+空の権限／ホスト許可リストは「許可なし」であり、未指定とは異なります。
+未知キー、null、重複JSONキー、型違いは拒否します。同一配列値の重複は警告付きで統合します
+（実行APIの重複は仕様に従いエラー）。ホストはDNS名・IPのみで、スキーム・ポート・パス・ワイルドカードは入力できません。
+
+### 照合の仕組み
+
+`入力検証 → 既存解析／JSON取込 → 証拠と走査範囲の正規化 → 方針照合 → レポート → 任意の前後比較`
+の順で処理します。実装は`intentcheck/`に分離し、既存の解析CLIや画面の使い方を保持しています。
+
+| 項目 | 比較する内容 | 結果と制約 |
+|---|---|---|
+| PERM-01 | Manifestの宣言権限と完全な権限名の許可集合 | 範囲外の信頼できる宣言は`mismatch`。権限付与・API実行は未確認 |
+| URL-01 | HTTP(S)絶対URLからパーサーで取得したホストと許可ホスト | 範囲外は`candidate`。userinfoを区別し、サブドメインはドット境界で比較。DNS解決・URL接続はしない |
+| HTTP-01 | ManifestとNSCの実効平文通信許可設定 | 対応環境で許可範囲があれば`mismatch`。NSC優先・base-config／domain-configの継承を解釈 |
+| SDK-01 | 登録済みSDKの既存文字列ヒント | ヒントがあれば`candidate`。検証済み構造署名がないため非空denylistの完全な適合は出さない |
+
+判定は`mismatch`（不一致確認）、`candidate`（候補）、`conform_in_scope`（確認範囲で適合）、
+`unknown`（確認不能）、`unspecified`（未指定）の5種類です。領域別要約に`has_unknowns`を併記し、
+一部に不一致が見つかっても未確認範囲を隠しません。総合安全スコアは出しません。
+
+既存JSONの`analysis_status=success`だけでは完全性を保証できないため、従来レポートを取り込む場合は
+走査範囲を`unknown`とします。見つかった証拠は報告しますが、欠落フィールドを空集合や適合に変換しません。
+`schema_version=1.0`およびリポジトリ同梱の旧レポートの特徴を持つ形式を認識し、それ以外は拒否します。
+`analyze`で追加する`intentcheck_extraction.version=1.0`が、宣言権限とURL走査の範囲を記録します。
+同じURLの複数出現は証拠IDを残して候補へ統合し、handoff由来の重複は加算しません。
+候補数・出現数・ホスト数を分離し、構造確認できたXML名前空間の出現だけを対象外にします。
+
+HTTPの対応表は`intentcheck/http_policy.py`の`SUPPORT_MATRIX`にあります。
+通常インストールされたアプリ、runtime API 23〜35、target SDK 1〜35、defaultリソース構成を対象とします。
+API 24以降でNSC参照がある場合はNSCを優先し、API 23ではManifestを使います。
+NSCの未指定属性は親設定・対応環境の既定値を継承します。リソース修飾子付きNSC、未解決参照、
+未対応API・構成・属性は`unknown`です。API別の実機検証が完了したという意味ではありません。
+公式Developer文書へのアクセスは本クラウド環境では403だったため、既定値と継承は固定版の
+[AOSP NetworkSecurityConfig](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/core/java/android/security/net/config/NetworkSecurityConfig.java)と
+[XmlConfigSource](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/core/java/android/security/net/config/XmlConfigSource.java)も確認しています。
+
+SDK台帳版は`trafficissue-hints-1`、IDは`firebase_analytics`, `google_ads`, `google_maps`, `facebook`, `adjust`, `appsflyer`です。
+禁止IDの未登録・台帳版違いは入力エラーです。空の禁止リストは「個別禁止SDKの指定なし」であり、
+SDKを走査して不存在を確認したことにはしません。M3の検証済み構造署名による確定同梱判定は未実装です。
+
+### 出力と比較・人手レビュー
+
+新規の出力ディレクトリに以下を保存します。既存ディレクトリへの出力は拒否します。
+
+| ファイル | 内容 |
+|---|---|
+| `result.json` | 方針スナップショット・ハッシュ、対象APK、領域別要約、証拠IDと判定の正式な結果 |
+| `report.md` | 要求・抽出事実・理由・所在・限界を組にした日本語レポート |
+| `findings.csv` | 1行1判定。複数値はJSON、表計算用の数式開始記号は無害化 |
+| `run.json` | 入力ハッシュ、ルール版、アダプター版、環境、引数、時間、メモリ計測、資源上限 |
+| `source_static_analysis.json` | 受領または生成した元解析JSONのコピー |
+| `case.json` | run_id・case_id・APK・意図版を結ぶケース台帳レコード |
+
+証拠には元JSON Pointer、APKメンバー、取得方法、信頼度を残します。不明なクラス・行番号は生成しません。
+前後比較では`comparison.json`と`comparison.md`を生成し、証拠の追加・削除と方針上の変化を分離します。
+同一意図のID・版・ファイルハッシュ、ルール・アダプター・解析方式・SDK台帳が異なる比較や、
+異なるパッケージの比較は拒否します。前が確認不能なら後の不一致を`new_mismatch`とせず
+`comparison_unknown`にし、後の抽出失敗を削除・解消と扱いません。URL候補の削除は通信停止を意味しません。
+
+人手レビューは次の形式の配列を別ファイルに保存し、`join-reviews`で対応付けます。
+自動判定の書き換えや自動照合への正解入力は行いません。
+
+```json
+[{"run_id":"result.jsonのrun_id", "finding_id":"対応するfinding_id", "reviewer":"確認者", "note":"確認した根拠"}]
+```
+
+```bash
+python -m intentcheck join-reviews --result /tmp/intentcheck-C001/result.json \
+  --reviews /absolute/path/manual-reviews.json --out /tmp/intentcheck-review-C001
+```
+
+終了コードは`0`＝処理・出力完了（不一致があっても正常）、`2`＝入力不正、
+`3`＝証拠不足・部分成功・未対応（可能なレポートは保存）、`4`＝ツール・I/O等の実行失敗です。
+失敗途中の出力には`INCOMPLETE`を付けます。実行失敗時には適合結果を生成しません。
+
+### 対応範囲と残る検証
+
+資源上限は`match`／`analyze`の`--config`で変更できます（例：`{"resource_limits":{"tool_timeout_seconds":120}}`）。
+未知キー・0以下・整数以外は拒否します。既定値はAPK上限300 MiB、JSON上限100 MiB、展開総量2 GiB、10万メンバー、追加走査の1メンバー64 MiB、
+外部解析の制限時間300秒・アドレス空間4 GiBとし、実値を`run.json`に記録します。
+APKは実行・外部送信せず、危険なアーカイブパス・重複メンバーを拒否し、作業場所を実行ごとに分離します。
+抽出はLinuxで検証しています。APKのURL追加走査はDEX・XML・テキスト・assets内のASCII文字列が対象で、
+ネイティブバイナリ（Flutterを含む）、UTF-16、生成・暗号化URLは対象外です。
+既存解析器の資源超過・タイムアウトで継続できない場合は終了コード4で止め、適合を報告しません。
+
+開発用ケースで入力検証、ホスト偽装・サブドメイン境界、HTTP継承、部分失敗、前後比較、
+レポート間の判定一致を検証しています。同梱の実レポート1件でも取込を検証しています。
+研究評価用の独立した正解付きAPK群、P03/P04両方の実データ、Android各APIでの実機検証、
+難読化SDK署名の検証、別パッケージを結ぶエピソード台帳、
+TP/FP/FN/TNの研究集計は今回の実装・検証範囲には含まれません。
+
 ## 研究方針
 
 この版では、mitmproxy regular modeを全通信取得の主役にしません。一般APKではOSプロキシを使わない通信、証明書信頼の問題、証明書ピンニング、HTTP/3/QUICなどにより、HTTPプロキシだけではアプリ内通信が観測できないことがあります。

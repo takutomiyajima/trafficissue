@@ -1,0 +1,11 @@
+{
+  "intent_schema_version": "1.0",
+  "intent_id": "demo-policy",
+  "intent_version": "1",
+  "recorded_at": "2026-10-20T17:00:00+09:00",
+  "source_request": "説明用の架空方針。INTERNETのみ宣言し、api.example.comのURL候補に限定、API 35で平文通信を禁止する。",
+  "permissions": {"mode": "allowlist", "allowed": ["android.permission.INTERNET"]},
+  "endpoints": {"mode": "allowlist", "allowed_hosts": [{"host": "api.example.com", "include_subdomains": false}]},
+  "cleartext_configuration": {"mode": "deny", "runtime_api_levels": [35], "resource_profile": "default"},
+  "sdk_inclusion": {"mode": "unspecified"}
+}
