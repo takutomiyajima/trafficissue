@@ -28,7 +28,7 @@ def report(permissions=None, urls=None, complete=True):
             'permissions': [{'name': p} for p in (permissions or [])],
             'findings': [{'signal_type':'url', 'value':u, 'evidence':'source_file=classes.dex'} for u in (urls or [])],
             'stages': {'manifest_badging_analysis': {'status':'success'}},
-            'intentcheck_extraction': {'version':'1.0', 'stages': {d: {'status':'success' if complete else 'partial',
+            'intentcheck_extraction': {'version':'1.0', 'tool_fingerprints': {'static_analyzer.py': {'source_sha256': 'a'*64}}, 'stages': {d: {'status':'success' if complete else 'partial',
                        'coverage':'complete_in_scope' if complete else 'partial'} for d in ('permissions','endpoints')}}}
 
 
@@ -37,7 +37,7 @@ def run_result(r):
     f, findings, summaries = match_report(p, r)
     return {'result_schema_version': '1.0', 'run_id': 'test', 'facts': f, 'findings': findings,
             'summaries': summaries, 'intent': {'id':'i','version':'1','sha256':'same'},
-            'application': r['application'], 'provenance': {'adapter':'1','rule_version':'1','registry_hash':'same'}}
+            'application': r['application'], 'provenance': {'adapter':'1','rule_version':'1','registry_hash':'same', 'tool_fingerprints': copy.deepcopy(r['intentcheck_extraction']['tool_fingerprints'])}}
 
 
 class ValidationTest(unittest.TestCase):
@@ -129,7 +129,7 @@ class MatcherTest(unittest.TestCase):
 class HttpTest(unittest.TestCase):
     def config(self, attributes='', nsc=None, target=35):
         return {'manifest_xml': f'<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-sdk android:targetSdkVersion="{target}"/><application {attributes}/></manifest>',
-                'nsc_xml':nsc, 'resource_resolution':'resolved_default','resource_variants':[]}
+                **({'nsc_xml': nsc} if nsc is not None else {}), 'resource_resolution':'resolved_default','resource_variants':[]}
 
     def test_defaults_and_manifest(self):
         self.assertEqual(evaluate_http(self.config(),35,'default')['verdict'],'conform_in_scope')
@@ -262,3 +262,134 @@ class ConfigurationTest(unittest.TestCase):
     def test_normalized_url_identity(self):
         self.assertEqual(normalize_url('https://user:pass@evil.test/a#frag'),normalize_url('https://evil.test:443/a'))
         self.assertNotEqual(normalize_url('https://evil.test:0/a'),normalize_url('https://evil.test/a'))
+
+class ReviewRegressionTest(unittest.TestCase):
+    def test_comparison_rejects_changed_added_removed_and_missing_fingerprints(self):
+        before = run_result(report())
+        after = run_result(report(['android.permission.READ_CONTACTS']))
+        self.assertEqual(compare(before, after, 'E')['relations'][0]['relation'], 'new_mismatch')
+        for fingerprints in ({'static_analyzer.py': {'source_sha256': 'b'*64}},
+                             {'static_analyzer.py': {'source_sha256': 'a'*64}, 'aapt': {'executable_sha256': 'c'*64}},
+                             {}, None):
+            with self.subTest(fingerprints=fingerprints):
+                changed = copy.deepcopy(after)
+                changed['provenance']['tool_fingerprints'] = fingerprints
+                with self.assertRaises(CheckError) as caught:
+                    compare(before, changed, 'E')
+                self.assertEqual(caught.exception.code, 'INCOMPARABLE_RUNS')
+        for run in (before, after):
+            run['provenance'].pop('tool_fingerprints')
+        with self.assertRaises(CheckError):
+            compare(before, after, 'E')
+
+    def test_path_independent_apkanalyzer_decodes_manifest_and_nsc(self):
+        import os
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            sdk = t/'sdk'
+            analyzer = sdk/'cmdline-tools/latest/bin/apkanalyzer'
+            analyzer.parent.mkdir(parents=True)
+            analyzer.write_text('#!/bin/sh\nexit 1\n')
+            analyzer.chmod(0o755)
+            jar = analyzer.parent.parent/'lib/analyzer.jar'
+            jar.parent.mkdir()
+            jar.write_bytes(b'java implementation')
+            apk = t/'app.apk'
+            with zipfile.ZipFile(apk, 'w') as z:
+                z.writestr('AndroidManifest.xml', b'\x03\x00binary manifest')
+                z.writestr('res/xml/net.xml', b'\x03\x00binary nsc')
+            manifest = '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="test.app"><uses-sdk android:targetSdkVersion="35"/><uses-permission android:name="android.permission.INTERNET"/><application android:networkSecurityConfig="@xml/net"/></manifest>'
+            nsc = '<network-security-config><base-config cleartextTrafficPermitted="false"/></network-security-config>'
+            def tool(command):
+                if command[0] == sys.executable:
+                    (t/'static.json').write_text(json.dumps(report()))
+                    return 0, '', ''
+                self.assertEqual(command[0], str(analyzer))
+                return (0, manifest, '') if command[1:3] == ['manifest', 'print'] else (0, nsc, '')
+            with patch.dict(os.environ, {'ANDROID_HOME': str(sdk), 'ANDROID_SDK_ROOT': str(sdk)}), \
+                 patch('static_analyzer.shutil.which', return_value=None), \
+                 patch('intentcheck.extractor.run_tool', side_effect=tool) as calls:
+                r = extract(apk, t)
+            self.assertIn([str(analyzer), 'resources', 'xml', '--file', 'res/xml/net.xml', str(apk)], [c.args[0] for c in calls.call_args_list])
+            self.assertTrue(r['intentcheck_extraction']['permissions_structural'])
+            fingerprints = r['intentcheck_extraction']['tool_fingerprints']
+            self.assertIn('apkanalyzer', fingerprints)
+            self.assertIn('apkanalyzer:lib/analyzer.jar', fingerprints)
+            self.assertIn('intentcheck/extractor.py', fingerprints)
+            _, _, summaries = match_report(intent(), r)
+            self.assertEqual(summaries['permissions']['verdict'], 'conform_in_scope')
+            self.assertEqual(summaries['cleartext_configuration']['verdict'], 'conform_in_scope')
+
+    def test_nested_type_errors_are_cli_input_errors_with_pointers(self):
+        cases = [('/intentcheck_extraction/stages', ['intentcheck_extraction', 'stages'], []),
+                 ('/intentcheck_extraction/stages/permissions', ['intentcheck_extraction', 'stages', 'permissions'], 'success'),
+                 ('/intentcheck_extraction/http_configuration', ['intentcheck_extraction', 'http_configuration'], []),
+                 ('/intentcheck_extraction/http_configuration/manifest_xml', ['intentcheck_extraction', 'http_configuration'], {'manifest_xml': 42}),
+                 ('/intentcheck_extraction/url_occurrences', ['intentcheck_extraction', 'url_occurrences'], {}),
+                 ('/intentcheck_extraction/permissions_structural', ['intentcheck_extraction', 'permissions_structural'], 'false'),
+                 ('/intentcheck_extraction/tool_fingerprints', ['intentcheck_extraction', 'tool_fingerprints'], []),
+                 ('/permissions/0/name', ['permissions'], [{'name': 5}]),
+                 ('/findings/0/value', ['findings'], [{'signal_type': 'url', 'value': []}]),
+                 ('/sdk_hints', ['sdk_hints'], []),
+                 ('/sdk_metadata/SDK', ['sdk_metadata'], {'SDK': []}),
+                 ('/application/package_name', ['application', 'package_name'], [])]
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            for i, (pointer, path, value) in enumerate(cases):
+                with self.subTest(pointer=pointer):
+                    r = report()
+                    obj = r
+                    for field in path[:-1]:
+                        obj = obj[field]
+                    obj[path[-1]] = value
+                    source = t/'static.json'
+                    source.write_text(json.dumps(r))
+                    output = t/str(i)
+                    p = subprocess.run([sys.executable, '-m', 'intentcheck', 'match', '--intent',
+                                        str(ROOT/'examples/intentcheck/intent.json'), '--static-report', str(source),
+                                        '--case-id', 'bad', '--out', str(output)], cwd=ROOT, capture_output=True, text=True)
+                    self.assertEqual(p.returncode, 2, p.stderr)
+                    self.assertEqual(json.loads(p.stderr)['code'], 'UNSUPPORTED_SCHEMA')
+                    self.assertIn(pointer, json.loads(p.stderr)['message'])
+                    self.assertFalse(output.exists())
+
+    def test_conformity_links_facts_and_empty_scan_scope(self):
+        for r in (report(['android.permission.INTERNET'], ['https://api.example.com/a']), report()):
+            facts, findings, _ = match_report(intent(), r)
+            evidence = {e['evidence_id']: e for e in facts['evidence']}
+            for domain, field, kind in (('permissions', 'permissions', 'permission'), ('endpoints', 'url_candidates', 'url')):
+                f = next(f for f in findings if f['domain'] == domain and f['verdict'] == 'conform_in_scope')
+                self.assertTrue(f['evidence_ids'])
+                self.assertTrue(all(eid in evidence for eid in f['evidence_ids']))
+                self.assertIn('extraction_scope', {evidence[eid]['kind'] for eid in f['evidence_ids']})
+                for fact in facts[field]:
+                    self.assertTrue(set(fact['evidence_ids']).issubset(f['evidence_ids']))
+
+    def test_comparison_write_failure_keeps_marker_and_exit_four(self):
+        from intentcheck.__main__ import main, execute, parser
+        import io
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            before = t/'before.json'; after = t/'after.json'
+            before.write_text(json.dumps(run_result(report())))
+            after.write_text(json.dumps(run_result(report())))
+            real_write = Path.write_text
+            for filename in ('comparison.json', 'comparison.md'):
+                output = t/filename
+                argv = ['intentcheck', 'compare', '--before', str(before), '--after', str(after),
+                        '--episode-id', 'E', '--out', str(output)]
+                def fail_write(path, *args, **kwargs):
+                    if path.name == filename:
+                        raise OSError('simulated disk failure')
+                    return real_write(path, *args, **kwargs)
+                with patch.object(Path, 'write_text', fail_write), patch.object(sys, 'argv', argv), \
+                     patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                    self.assertEqual(main(), 4)
+                self.assertEqual(json.loads(stderr.getvalue())['code'], 'EXECUTION_ERROR')
+                self.assertTrue((output/'INCOMPLETE').exists())
+            output = t/'success'
+            args = parser().parse_args(argv[1:-1]+[str(output)])
+            self.assertEqual(execute(args), 3)
+            self.assertTrue((output/'comparison.json').exists())
+            self.assertTrue((output/'comparison.md').exists())
+            self.assertFalse((output/'INCOMPLETE').exists())

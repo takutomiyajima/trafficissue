@@ -14,6 +14,8 @@ APKの解析結果から、開発者が**独立して記録した構造化方針
 
 Python 3.10以降と既存の依存関係を使用します。JSON取込・照合自体には追加の外部パッケージは不要です。
 APK解析は既存の`static_analyzer.py`を再利用し、Manifest／NSCのバイナリXMLには`apkanalyzer`を使用します。
+`apkanalyzer`はPATHに加え、`ANDROID_HOME`・`ANDROID_SDK_ROOT`および既定のSDKディレクトリの
+`cmdline-tools/latest/bin`・版別の`cmdline-tools/*/bin`を既存解析器と同じ方法で探索します。
 クラウド環境では`source /workspace/trafficissue-tools/activate.sh`で導入済みの環境を有効化できます。
 
 まず[意図ファイルの例](examples/intentcheck/intent.json)をコピーし、実際の要求に合わせてID・版・記録時刻・方針を編集してください。
@@ -64,6 +66,8 @@ JSONだけなら`identity_verification=report_only`であり、APK実体を検�
 
 既存JSONの`analysis_status=success`だけでは完全性を保証できないため、従来レポートを取り込む場合は
 走査範囲を`unknown`とします。見つかった証拠は報告しますが、欠落フィールドを空集合や適合に変換しません。
+取込JSONはネストしたstage・HTTP設定・URL出現・SDK情報・指紋などの型も検証し、
+不正な場合は該当JSON Pointer付きの`UNSUPPORTED_SCHEMA`（終了コード2）を返します。
 `schema_version=1.0`およびリポジトリ同梱の旧レポートの特徴を持つ形式を認識し、それ以外は拒否します。
 `analyze`で追加する`intentcheck_extraction.version=1.0`が、宣言権限とURL走査の範囲を記録します。
 同じURLの複数出現は証拠IDを残して候補へ統合し、handoff由来の重複は加算しません。
@@ -96,9 +100,13 @@ SDKを走査して不存在を確認したことにはしません。M3の検証
 | `case.json` | run_id・case_id・APK・意図版を結ぶケース台帳レコード |
 
 証拠には元JSON Pointer、APKメンバー、取得方法、信頼度を残します。不明なクラス・行番号は生成しません。
+権限・URLの適合判定は、確認した各事実の証拠IDと走査完了記録の証拠IDを参照します。
+宣言・候補が0件の場合も走査完了記録を参照し、適合とした範囲を追跡できます。
 前後比較では`comparison.json`と`comparison.md`を生成し、証拠の追加・削除と方針上の変化を分離します。
-同一意図のID・版・ファイルハッシュ、ルール・アダプター・解析方式・SDK台帳が異なる比較や、
-異なるパッケージの比較は拒否します。前が確認不能なら後の不一致を`new_mismatch`とせず
+同一意図のID・版・ファイルハッシュ、ルール・アダプター・解析方式・SDK台帳・ツール指紋が異なる比較や、
+異なるパッケージの比較は拒否します。指紋には抽出器本体・静的解析器・検出したSDKツールと
+`apkanalyzer`のJARを含めます。指紋が欠落・空の旧結果同士も比較を拒否するため、双方を再解析してください。
+前が確認不能なら後の不一致を`new_mismatch`とせず
 `comparison_unknown`にし、後の抽出失敗を削除・解消と扱いません。URL候補の削除は通信停止を意味しません。
 
 人手レビューは次の形式の配列を別ファイルに保存し、`join-reviews`で対応付けます。
@@ -115,7 +123,8 @@ python -m intentcheck join-reviews --result /tmp/intentcheck-C001/result.json \
 
 終了コードは`0`＝処理・出力完了（不一致があっても正常）、`2`＝入力不正、
 `3`＝証拠不足・部分成功・未対応（可能なレポートは保存）、`4`＝ツール・I/O等の実行失敗です。
-失敗途中の出力には`INCOMPLETE`を付けます。実行失敗時には適合結果を生成しません。
+単体レポート・比較レポート・レビュー出力は、書き込み開始前に`INCOMPLETE`を作成し、
+全ファイルを正常に保存できた場合だけ削除します。途中書き込み失敗では終了コード4とマーカーを残します。
 
 ### 対応範囲と残る検証
 

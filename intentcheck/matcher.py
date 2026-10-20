@@ -21,6 +21,9 @@ RULES = dict(zip(DOMAINS, ['PERM-01', 'URL-01', 'HTTP-01', 'SDK-01']))
 def match_report(intent, report):
     facts = adapt(report)
     findings, summaries = [], {}
+    def conformity_evidence(domain, records):
+        return [facts['coverage_evidence'][domain]] + [eid for record in records for eid in record['evidence_ids']]
+
     def add(domain, verdict, fact, evidence_ids, reason):
         findings.append({'finding_id': f'F-{RULES[domain]}-{len(findings)+1:05d}',
                          'requirement_id': domain, 'rule_id': RULES[domain], 'rule_version': RULE_VERSION,
@@ -44,7 +47,7 @@ def match_report(intent, report):
             if not complete:
                 add(domain, 'unknown', {}, [], '宣言権限の完全な走査を確認できない。フィールド欠落は0件とみなさない。')
             elif len(findings) == start:
-                add(domain, 'conform_in_scope', {}, [], '走査したManifest宣言権限は許可集合内。')
+                add(domain, 'conform_in_scope', {}, conformity_evidence(domain, facts['permissions']), '走査したManifest宣言権限は許可集合内。')
         elif domain == 'endpoints':
             for u in facts['url_candidates']:
                 allowed = any(u['host'] == a['host'] or (a['include_subdomains'] and u['host'].endswith('.'+a['host'])) for a in policy['allowed_hosts'])
@@ -53,7 +56,7 @@ def match_report(intent, report):
             if not complete:
                 add(domain, 'unknown', {}, [], 'URL候補の対応範囲の走査完了を確認できない。')
             elif len(findings) == start:
-                add(domain, 'conform_in_scope', {}, [], '抽出したURL候補内では範囲外候補なし。実通信は未確認。')
+                add(domain, 'conform_in_scope', {}, conformity_evidence(domain, facts['url_candidates']), '抽出したURL候補内では範囲外候補なし。実通信は未確認。')
         elif domain == 'cleartext_configuration':
             results = []
             config = facts['http_configuration']
