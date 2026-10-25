@@ -1,0 +1,107 @@
+{
+  "schema_version": "2.0",
+  "case_id": "artificial-travel-demo",
+  "experiment_split": "development",
+  "generation": {
+    "series_id": "artificial-fixture",
+    "conditions": {
+      "note": "架空の開発用ケース。実際のAI生成・旅行記録APKではない"
+    }
+  },
+  "artifact": {
+    "artifact_id": "demo-apk",
+    "apk_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "documents": [
+    {
+      "document_id": "request",
+      "kind": "request",
+      "path": "request.txt",
+      "sha256": "719febd51f9d39c92d6e21db4ef5bc0895509e732d2ad1451ecdb7a44e249f8e",
+      "version": "1",
+      "artifact_id": "demo-apk",
+      "origin_type": null,
+      "responded_at": null,
+      "review": {
+        "reviewer": "development-fixture",
+        "reviewed_at": "2026-10-25T12:00:00+09:00",
+        "status": "complete"
+      }
+    },
+    {
+      "document_id": "ai",
+      "kind": "explanation",
+      "path": "explanation.txt",
+      "sha256": "f1515d6ee5b2cc0a2efd1e689d28236ac61f269ca353aa52e54c1a1e82107e62",
+      "version": "1",
+      "artifact_id": "demo-apk",
+      "origin_type": "initial_response",
+      "responded_at": null,
+      "review": {
+        "reviewer": "development-fixture",
+        "reviewed_at": "2026-10-25T12:00:00+09:00",
+        "status": "complete"
+      }
+    }
+  ],
+  "requirements": [],
+  "claims": [
+    {
+      "claim_id": "no-location",
+      "source": {
+        "document_id": "ai",
+        "start_line": 1,
+        "end_line": 1
+      },
+      "domain": "permissions",
+      "predicate": "absent",
+      "value": "android.permission.ACCESS_FINE_LOCATION",
+      "scope": "exact",
+      "confirmation": {
+        "reviewer": "development-fixture",
+        "reviewed_at": "2026-10-25T12:00:00+09:00"
+      },
+      "speech_act": "implemented",
+      "certainty": "asserted",
+      "requirement_ids": []
+    },
+    {
+      "claim_id": "propose-maps",
+      "source": {
+        "document_id": "ai",
+        "start_line": 2,
+        "end_line": 2
+      },
+      "domain": "sdk",
+      "predicate": "present",
+      "value": "google_maps",
+      "scope": "exact",
+      "confirmation": {
+        "reviewer": "development-fixture",
+        "reviewed_at": "2026-10-25T12:00:00+09:00"
+      },
+      "speech_act": "proposal",
+      "certainty": "asserted",
+      "requirement_ids": []
+    },
+    {
+      "claim_id": "no-traffic",
+      "source": {
+        "document_id": "ai",
+        "start_line": 3,
+        "end_line": 3
+      },
+      "domain": "behavior",
+      "predicate": "runtime",
+      "value": "外部通信なし",
+      "scope": "exact",
+      "confirmation": {
+        "reviewer": "development-fixture",
+        "reviewed_at": "2026-10-25T12:00:00+09:00"
+      },
+      "speech_act": "implemented",
+      "certainty": "asserted",
+      "requirement_ids": []
+    }
+  ]
+}
