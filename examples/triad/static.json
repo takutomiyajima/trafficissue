@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "application": {
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "package_name": "demo.travel"
+  },
+  "stages": {
+    "manifest_badging_analysis": {
+      "status": "success"
+    }
+  },
+  "permissions": [
+    {
+      "name": "android.permission.ACCESS_FINE_LOCATION"
+    }
+  ],
+  "findings": [
+    {
+      "signal_type": "url",
+      "value": "https://maps.example.com/path",
+      "evidence": "source_file=classes.dex"
+    }
+  ],
+  "intentcheck_extraction": {
+    "version": "1.0",
+    "stages": {
+      "permissions": {
+        "status": "success",
+        "coverage": "complete_in_scope",
+        "scope": "artificial fixture"
+      },
+      "endpoints": {
+        "status": "success",
+        "coverage": "complete_in_scope",
+        "scope": "artificial fixture"
+      }
+    }
+  }
+}

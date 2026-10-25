@@ -37,6 +37,12 @@ def parser():
             c.add_argument('--apk', required=command=='analyze')
             if command == 'match':
                 c.add_argument('--static-report', required=True)
+    c = sub.add_parser('triangulate', help='v2: requirements, AI explanations and APK evidence')
+    c.add_argument('--case', required=True)
+    c.add_argument('--config')
+    c.add_argument('--apk')
+    c.add_argument('--static-report')
+    c.add_argument('--out', required=True)
     c = sub.add_parser('compare')
     for f in ('before', 'after', 'episode-id', 'out'):
         c.add_argument('--'+f, required=True)
@@ -49,6 +55,9 @@ def parser():
 def execute(args):
     started = now()
     t = time.monotonic()
+    if args.command == 'triangulate':
+        from .triad import run
+        return run(args)
     if args.command == 'compare':
         before, after = load_json(args.before), load_json(args.after)
         try:

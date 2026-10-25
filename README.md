@@ -4,6 +4,43 @@ UI操作ログと通信観測ログを時刻で対応付け、Androidアプリ�
 
 セットアップ、一括解析、個別実行、出力の読み方、トラブルシューティングを含む詳細な手順は、[`docs/usage_guide.md`](docs/usage_guide.md)を参照してください。
 
+## v2：開発要求・AIの説明・APK構成の三者照合
+
+[要件定義v2.0](docs/requirements/static_analysis_requirements_v2.md)に沿って、要求判定・説明判定・説明対応を分ける
+`triangulate`を追加しました。[入力例](examples/triad/case.json)は**架空の開発用ケース**です。
+旅行記録アプリの生成時AI回答・実APK・独立正解表は未保存のため、その実資料を必要とする確認は保留です。
+
+```bash
+# 元要求・AI回答を人手で構造化し、原文のハッシュ・行位置・確認者を記録したcase.jsonを指定
+python -m intentcheck triangulate --case examples/triad/case.json \
+  --static-report examples/triad/static.json --out /tmp/triad-demo
+
+# APKから既存解析器と固定SDK署名スキャナーを実行
+python -m intentcheck triangulate --case /absolute/path/case.json \
+  --apk /absolute/path/app.apk --out /tmp/triad-apk
+
+python -m unittest discover -s tests -v
+```
+
+`--apk`と`--static-report`の同時指定はハッシュ対応を確認します。`--config`は既存と同じ
+`{"resource_limits":{...}}`形式です。部分解析・必要証拠不足は終了コード3で可能な結果を保存します。
+同梱のJSON例もSDK構造証拠がないため終了コード3です。入力不正は2、実行障害は4です。
+
+- 要求がない構成を「要求違反」「不要」と呼びません。URL文字列の許可範囲外は追加確認です。
+- AI説明は支持・矛盾・裏付け不足・対象外・実装主張ではない・説明未提供を区別します。
+- 説明漏れ候補は説明全文の構造化確認が完了した場合だけ生成します。否定説明も言及として扱います。
+- SDKはGoogle Maps／Firebase Analyticsの限定したAPIクラス集合を固定台帳で扱い、DEXクラス定義による署名一致と単独文字列ヒントを分けます。
+  非検出から不存在を主張しません。実SDK・実APKでの検出性能評価は未実施です。
+- APK内の位置情報権限とURLを、未確認の送信経路で結び付けません。自由文・提案・可能性を実装済みの断言に変換しません。
+
+出力は`result.json`、日本語`report.md`、同じ情報を一覧順に示す`baseline.md`、`run.json`、
+`findings.csv`、ケース台帳・評価用対応表、原文コピー`raw_inputs/`です。原文・構造化入力・解析入力のハッシュを記録し、
+既存出力を上書きしません。人手レビューは既存の`join-reviews`で別管理できます。
+原文や構造化URLに秘密情報がある場合は共有前に確認してください。自動的な伏字済みとは扱いません。
+
+入力契約・棚卸し・規則・SDK対応範囲・受入条件との対応は[実装設計](docs/triad_v2.md)にまとめています。
+研究用の独立正解・実資料での評価、GUI・LLMなどの条件付き拡張の完成を意味するものではありません。
+
 ## 開発意図とAPKの照合（intentcheck）
 
 APKの解析結果から、開発者が**独立して記録した構造化方針**への抵触を調べるCLIを追加しました。
